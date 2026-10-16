@@ -209,18 +209,27 @@ void UI::smokeControls() {
         cfg_.animations = true;
         pressed_ = L"popupRegression";
         dropdown({500, h_ - 110, 850, h_ - 70}, {L"One", L"Two", L"Three"}, 2, [](int) {});
-        popup_.start = clockUs() - 75000;
+        popup_.start = clockUs() + 1000000;
         controls_.clear();
         target_->BeginDraw();
         popup();
         check(target_->EndDraw(), "Popup reveal regression drawing");
+        require(std::none_of(controls_.begin(), controls_.end(), [](const auto& control) {
+            return control.enabled && control.id.rfind(L"option", 0) == 0;
+        }), "Unrevealed popup rows remained clickable");
+        popup_.start = clockUs() - 200000;
+        controls_.clear();
+        target_->BeginDraw();
+        popup();
+        check(target_->EndDraw(), "Completed popup reveal regression");
+        int visibleOptions = 0;
         for (const auto& control : controls_)
-            if (control.enabled && control.id.rfind(L"option", 0) == 0)
+            if (control.enabled && control.id.rfind(L"option", 0) == 0) {
+                ++visibleOptions;
                 require(control.rect.bottom <= popup_.anchor.top - 5,
                         "Upward popup did not stay attached above its field");
-        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
-            return control.id == L"option0" && !control.enabled;
-        }), "Hidden popup rows remained clickable during reveal");
+            }
+        require(visibleOptions == 3, "Completed popup hid selectable rows");
         popup_.open = popup_.closing = false;
         report << "PASS upward dropdown anchors to field and clips unrevealed hit targets\n";
         report << "UNVERIFIED capture/audio/replay operation, folder dialogs, every hardware encoder, "
