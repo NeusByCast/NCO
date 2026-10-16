@@ -24,7 +24,7 @@ class VideoPipeline {
     struct Metrics {
         uint64_t frames = 0, readbackDropped = 0;
         double prepareMs = 0, submitMs = 0, encodeMs = 0;
-        size_t queued = 0;
+        size_t queued = 0, readbackPending = 0;
     };
   private:
     Metrics metrics_;

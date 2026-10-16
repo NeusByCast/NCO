@@ -5,7 +5,8 @@ namespace nco {
 struct EngineStats {
     bool recording = false, paused = false, replay = false, ready = false, gpu = false;
     uint64_t frames = 0, dropped = 0, freshFrames = 0;
-    size_t replayBytes = 0, encodeQueue = 0;
+    size_t replayBytes = 0, encodeQueue = 0, readbackQueue = 0;
+    uint64_t readbackDropped = 0;
     int64_t durationUs = 0;
     Size output{};
     double actualFps = 0, bitrateMbps = 0, prepareMs = 0, submitMs = 0;

@@ -72,5 +72,15 @@ int main() {
     r.cap = 100;
     r.push({0, false, 5});
     CHECK(r.snapshot().empty());
+    ReplayRing<P> reordered;
+    reordered.push({10000, false, 10}); // Audio arrives before the asynchronous first keyframe.
+    CHECK(reordered.snapshot().empty());
+    reordered.push({0, true, 10});
+    reordered.push({30000, false, 10});
+    reordered.push({20000, false, 10});
+    auto ordered = reordered.snapshot();
+    CHECK(ordered.size() == 4 && ordered.front().key());
+    CHECK(ordered[1].t == 10000 && ordered[2].t == 20000 && ordered[3].t == 30000);
+    CHECK(reordered.bytes() == 40);
     std::cout << "NCO core tests passed\n";
 }

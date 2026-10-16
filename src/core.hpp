@@ -81,7 +81,13 @@ template <class T> class ReplayRing {
     }
     void push(T p) {
         bytes_ += p.bytes();
-        packets_.push_back(std::move(p));
+        // Encoded video may arrive after newer audio on the asynchronous path.
+        auto position = std::upper_bound(packets_.begin(), packets_.end(), p,
+            [](const T& left, const T& right) {
+                if (left.us() != right.us()) return left.us() < right.us();
+                return left.key() && !right.key();
+            });
+        packets_.insert(position, std::move(p));
         const int64_t cutoff = packets_.back().us() - int64_t(seconds) * 1000000;
         while (packets_.size() > 1) {
             auto next = std::find_if(std::next(packets_.begin()), packets_.end(),
@@ -99,12 +105,15 @@ template <class T> class ReplayRing {
         }
         if (bytes_ > cap)
             clear();
-        while (!packets_.empty() && !packets_.front().key()) {
+        const bool hasKey = std::any_of(packets_.begin(), packets_.end(),
+                                        [](const T& packet) { return packet.key(); });
+        while (hasKey && !packets_.empty() && !packets_.front().key()) {
             bytes_ -= packets_.front().bytes();
             packets_.pop_front();
         }
     }
     std::vector<T> snapshot() const {
+        if (packets_.empty() || !packets_.front().key()) return {};
         return {packets_.begin(), packets_.end()};
     }
     size_t bytes() const {

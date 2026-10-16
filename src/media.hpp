@@ -69,6 +69,10 @@ class VideoEncoder {
     std::string selected, selectedAdapter;
     double prepareMs = 0, submitMs = 0;
     uint64_t submittedFrames = 0, readbackDrops = 0;
+    size_t pendingReadbacks() const {
+        return size_t(std::count_if(readbacks_.begin(), readbacks_.end(),
+                                    [](const auto& job) { return job.pending; }));
+    }
     ~VideoEncoder();
     void open(const Config& config, Capture* capture, Size input, bool synthetic = false);
     Track track() const;

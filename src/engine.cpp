@@ -409,6 +409,8 @@ void Engine::run(std::stop_token token) {
                 local.submitMs = metrics.submitMs;
                 local.encodeMs = metrics.encodeMs;
                 local.encodeQueue = metrics.queued;
+                local.readbackQueue = metrics.readbackPending;
+                local.readbackDropped = metrics.readbackDropped;
                 for (auto& chunk : mic.drain())
                     mt.add(chunk, epoch);
                 for (auto& chunk : desktop.drain())
@@ -491,6 +493,8 @@ void Engine::run(std::stop_token token) {
                                          " submit_ms=" + std::to_string(local.submitMs) +
                                          " encode_ms=" + std::to_string(local.encodeMs) +
                                          " encode_queue=" + std::to_string(local.encodeQueue) +
+                                         " readback_queue=" + std::to_string(local.readbackQueue) +
+                                         " readback_dropped=" + std::to_string(local.readbackDropped) +
                                          " capture_ms=" + std::to_string(local.captureMs) +
                                          " fresh_frames=" + std::to_string(local.freshFrames) +
                                          " replay_MiB=" + std::to_string(ring.bytes() / 1048576.0) +

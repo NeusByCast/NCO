@@ -80,6 +80,7 @@ void VideoPipeline::run() {
                 busy_[size_t(job.slot)] = false;
                 metrics_.frames = encoder_.submittedFrames;
                 metrics_.readbackDropped = encoder_.readbackDrops;
+                metrics_.readbackPending = encoder_.pendingReadbacks();
                 metrics_.prepareMs = encoder_.prepareMs;
                 metrics_.submitMs = encoder_.submitMs;
                 metrics_.encodeMs = metrics_.encodeMs * .9 + elapsed * .1;
@@ -89,6 +90,7 @@ void VideoPipeline::run() {
         std::lock_guard lock(mutex_);
         metrics_.frames = encoder_.submittedFrames;
         metrics_.readbackDropped = encoder_.readbackDrops;
+                metrics_.readbackPending = encoder_.pendingReadbacks();
     } catch (...) {
         std::lock_guard lock(mutex_);
         error_ = std::current_exception();

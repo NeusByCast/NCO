@@ -12,3 +12,5 @@
 Automated Windows tests exercise region input messages, region replacement, popup release/clip handling, cached notification rendering at four requested DPI values, and a deliberately slow software encoder worker. These are not physical-GPU benchmarks or proof of smoothness on the user's laptop. Real-game FPS, GPU readback, live capture/audio synchronization, physical DPI layouts, and notification capture exclusion still require hardware testing.
 
 Download NCO-Setup.exe. Updates preserve user settings.
+
+Replay packets are kept in timestamp order when asynchronous video arrives after audio; initial audio is retained until its first video keyframe. Logs separately show GPU readback queue occupancy/rejections and CPU encoder queue depth.
