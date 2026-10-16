@@ -58,6 +58,15 @@ int main() {
     CHECK(!textureEncoderCompatible("h264_qsv", 0x8086)); // No QSV texture implementation yet.
     CHECK(!textureEncoderCompatible("libx264", 0x1002));
     CHECK(textureEncoderCompatible("h264_mf", 0x8086));
+    CHECK(shouldRetryCaptureOnEncoderGpu(0, true, false, "h264_amf"));
+    CHECK(shouldRetryCaptureOnEncoderGpu(0, true, false, "hevc_nvenc"));
+    CHECK(shouldRetryCaptureOnEncoderGpu(0, true, false, "h264_mf"));
+    CHECK(!shouldRetryCaptureOnEncoderGpu(1, true, false, "h264_amf"));
+    CHECK(!shouldRetryCaptureOnEncoderGpu(2, true, false, "h264_amf"));
+    CHECK(!shouldRetryCaptureOnEncoderGpu(0, false, false, "h264_amf"));
+    CHECK(!shouldRetryCaptureOnEncoderGpu(0, true, true, "h264_amf"));
+    CHECK(!shouldRetryCaptureOnEncoderGpu(0, true, false, "libx264"));
+    CHECK(!shouldRetryCaptureOnEncoderGpu(0, true, false, "h264_qsv"));
     CHECK(!containerCompatible("webm", "h264_nvenc"));
     CHECK(containerCompatible("webm", "av1_amf"));
     CHECK(containerCompatible("webm", "auto"));

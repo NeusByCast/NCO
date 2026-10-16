@@ -351,6 +351,17 @@ int mediaSelfTest() {
         platformSelfTest(report);
         {
             Config config;
+            config.encoder = "libx264";
+            VideoPipeline unused(config, nullptr, {320, 180}, true);
+            unused.finish();
+            const auto deadline = clockUs() + 2000000;
+            while (!unused.finished() && clockUs() < deadline) Sleep(1);
+            require(unused.finished() && unused.collect().empty() && unused.metrics().frames == 0,
+                    "Unused encoder startup session did not shut down cleanly");
+            report << "PASS unused encoder startup session teardown before capture-route retry\n";
+        }
+        {
+            Config config;
             config.bitrateKbps = 0;
             config.encoder = "libx264";
             config.fps = 30;

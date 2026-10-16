@@ -190,6 +190,42 @@ void Engine::run(std::stop_token token) {
         if (!capture)
             throw std::runtime_error("Choose an available capture source");
         video = std::make_unique<VideoPipeline>(cfg, capture.get(), capture->size());
+        if (shouldRetryCaptureOnEncoderGpu(cfg.captureBackend, capture->fallback(),
+                                          video->gpu(), video->selected())) {
+            // Startup only: keep the exact codec and image settings while
+            // evaluating a capture device that can feed it GPU textures.
+            Config sameEncoder = cfg;
+            sameEncoder.encoder = video->selected();
+            const auto originalSize = capture->size();
+            auto originalCapture = std::move(capture);
+            // Release the unused encoder before opening another hardware session.
+            video.reset();
+            Log::get().write("Auto capture: direct encoding unavailable on display GPU; trying encoder-local capture");
+            try {
+                auto candidateCapture = std::make_unique<Capture>();
+                candidateCapture->open(source, 1);
+                const auto candidateSize = candidateCapture->size();
+                if (candidateSize.w != originalSize.w || candidateSize.h != originalSize.h)
+                    throw std::runtime_error("Encoder-local capture changed source dimensions");
+                auto candidateVideo = std::make_unique<VideoPipeline>(sameEncoder, candidateCapture.get(), candidateSize);
+                if (!candidateVideo->gpu())
+                    throw std::runtime_error("Encoder-local capture still requires frame upload");
+                capture = std::move(candidateCapture);
+                video = std::move(candidateVideo);
+                texture.Reset();
+                previewDirty = true;
+                Log::get().write("Auto capture: encoder-local GPU texture path selected; CPU readback/upload avoided");
+            } catch (const winrt::hresult_error& e) {
+                Log::get().write("Encoder-local capture unavailable: " + utf8(e.message().c_str()));
+            } catch (const std::exception& e) {
+                Log::get().write(std::string("Encoder-local capture unavailable: ") + e.what());
+            }
+            if (!video) {
+                capture = std::move(originalCapture);
+                video = std::make_unique<VideoPipeline>(sameEncoder, capture.get(), originalSize);
+                Log::get().write("Auto capture: retained compatible display capture with frame upload");
+            }
+        }
         tracks = {video->track()};
         int count = cfg.separateTracks ? 2 : 1;
         for (int i = 0; i < count; ++i) {

@@ -37,3 +37,5 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 
 - Desktop Duplication retains its frame between capture ticks, releases just before the next acquisition, and cleans up outstanding ownership on errors and destruction. A deterministic Windows regression exercises actual Capture calls, including empty ticks and access loss.
 - AMF can encode textures on an integrated AMD capture GPU even when another AMD GPU ranks faster. This removes the forced GPU-to-RAM-to-GPU route on compatible hybrid systems. Encoder startup still validates support and retains the prior fallbacks. Quality, quantization limits, bitrate, output dimensions and frame-rate settings are unchanged.
+
+- Auto capture evaluates encoder-local WGC at startup when display-adapter encoding falls back to hardware frame upload. The retry keeps the successful codec and all image settings, verifies unchanged source dimensions, and requires direct GPU-texture encoding. Unsupported retries restore the compatible display capture path; explicit capture backends are respected. No runtime performance-monitor process or dependency is added.

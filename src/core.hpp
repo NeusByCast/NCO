@@ -48,6 +48,12 @@ inline bool textureEncoderCompatible(const std::string& codec, uint32_t vendor) 
            (codec.find("nvenc") != std::string::npos && vendor == 0x10de) ||
            codec.find("_mf") != std::string::npos;
 }
+inline bool shouldRetryCaptureOnEncoderGpu(int backend, bool desktopDuplication,
+                                            bool gpuTexturePath, const std::string& codec) {
+    return backend == 0 && desktopDuplication && !gpuTexturePath &&
+           (codec.find("amf") != std::string::npos || codec.find("nvenc") != std::string::npos ||
+            codec.find("_mf") != std::string::npos);
+}
 inline bool containerCompatible(const std::string& format, const std::string& codec) {
     if (format != "mp4" && format != "mkv" && format != "mov" && format != "webm")
         return false;
