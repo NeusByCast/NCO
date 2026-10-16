@@ -58,7 +58,7 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
         << " custom_desktop_device=" << !c.desktopDevice.empty() << "\r\n";
     out << "Available encoders:";
     for (const auto& encoder : encoders) out << ' ' << encoder.name;
-    out << "\r\n\r\nCurrent pipeline\r\nrecording=" << s.recording << " paused=" << s.paused
+    out << "\r\n\r\nCurrent pipeline\r\nrecording=" << s.recording << " paused=" << s.paused << " finalizing=" << s.finishing
         << " replay=" << s.replay << " selected_encoder=" << s.encoder
         << " encoder_adapter=" << s.encoderAdapter << " GPU_texture_path=" << s.gpuTexturePath
         << " output=" << s.output.w << 'x' << s.output.h

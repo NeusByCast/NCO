@@ -102,7 +102,8 @@ void Engine::run(std::stop_token token) {
             removed = 0, lastPreview = 0, lastUsage = 0;
     uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0, previousReadbackDrops = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
-    bool suspended = false;
+    bool suspended = false, stoppingRecording = false;
+    int64_t stopCutoff = 0, stopRequested = 0, latestVideoUs = -1;
     EngineStats local;
     Com<ID3D11Texture2D> texture;
     std::vector<Packet> recordingPreroll;
@@ -167,6 +168,7 @@ void Engine::run(std::stop_token token) {
         local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = 0;
         local.output = resolution(cfg.resolutionMode, cfg.width, cfg.height, capture->size());
         usageFrames = videoBytes = usageBytes = previousReadbackDrops = 0;
+        latestVideoUs = -1;
         lastUsage = 0;
         Log::get().write("Pipeline started replay=" + std::to_string(cfg.replay) +
                          " audio_tracks=" + std::to_string(count) +
@@ -176,10 +178,13 @@ void Engine::run(std::stop_token token) {
     };
     packets = [&](std::vector<Packet> ps) {
         for (auto& p : ps) {
-            if (p.stream == 0) videoBytes += p.bytes();
+            if (p.stream == 0) {
+                videoBytes += p.bytes();
+                latestVideoUs = std::max(latestVideoUs, p.us());
+            }
             if (replay)
                 ring.push(p);
-            if (recording && !paused) {
+            if (recording && !paused && (!stoppingRecording || p.us() <= stopCutoff)) {
                 if (gate) {
                     if (!p.key()) {
                         if (p.stream != 0) {
@@ -193,7 +198,8 @@ void Engine::run(std::stop_token token) {
                     gate = false;
                     disk.write(p, removed);
                     for (auto& audioPacket : recordingPreroll)
-                        if (audioPacket.us() >= p.us()) disk.write(audioPacket, removed);
+                        if (audioPacket.us() >= p.us() && (!stoppingRecording || audioPacket.us() <= stopCutoff))
+                            disk.write(audioPacket, removed);
                     recordingPreroll.clear();
                     continue;
                 }
@@ -286,14 +292,13 @@ void Engine::run(std::stop_token token) {
             for (auto action : actions) {
                 if (action == Record) {
                     if (recording) {
-                        if (!replay)
-                            endPipeline();
-                        disk.close();
-                        recording = false;
-                        paused = false;
-                        local.durationUs = 0;
-                        gen = 0;
+                        if (stoppingRecording) continue;
+                        stoppingRecording = true;
+                        stopRequested = clockUs();
+                        stopCutoff = stopRequested - epoch;
+                        Log::get().write("Recording finalization fence_us=" + std::to_string(stopCutoff));
                     } else {
+                        stoppingRecording = false;
                         beginPipeline();
                         auto path = uniquePath(cfg.directory, "NCO_", cfg.format);
                         disk.open(path, tracks, cfg.remux, cfg.format);
@@ -305,7 +310,7 @@ void Engine::run(std::stop_token token) {
                         removed = 0;
                         recordStart = clockUs();
                     }
-                } else if (action == Pause && recording) {
+                } else if (action == Pause && recording && !stoppingRecording) {
                     paused = !paused;
                     if (paused)
                         pauseStart = clockUs();
@@ -504,12 +509,25 @@ void Engine::run(std::stop_token token) {
                                          " desktop_discontinuities=" + std::to_string(desktop.discontinuities.load()),
                                      false);
             }
+            if (stoppingRecording && recording &&
+                ((latestVideoUs >= stopCutoff &&
+                  audioPts * 1000000 / 48000 + int64_t(cfg.audioOffsetMs) * 1000 >= stopCutoff) ||
+                 clockUs() - stopRequested >= 2000000)) {
+                if (!replay) endPipeline();
+                disk.close();
+                recording = false;
+                paused = false;
+                stoppingRecording = false;
+                local.durationUs = 0;
+                gen = 0;
+            }
+            local.finishing = stoppingRecording && recording;
             local.recording = recording;
             local.paused = paused;
             local.replay = replay;
             local.replayBytes = ring.bytes();
             if (recording)
-                local.durationUs = (paused ? pauseStart : clockUs()) - recordStart - removed;
+                local.durationUs = (paused ? pauseStart : stoppingRecording ? stopRequested : clockUs()) - recordStart - removed;
             {
                 std::lock_guard lock(mutex_);
                 stats_ = local;

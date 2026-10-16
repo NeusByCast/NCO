@@ -559,14 +559,15 @@ void UI::dashboard() {
          {left + 16, y + 42, left + 190, y + 66}, 11, muted);
     button(
         L"record",
-        stats_.recording ? L"Stop recording"
+        stats_.finishing ? L"Finalizing…"
+        : stats_.recording ? L"Stop recording"
         : probing_       ? L"Detecting encoders…"
                          : L"Start recording",
         {right - 380, y + 18, right - 216, y + 58}, [this] { command(0); }, true,
-        stats_.ready && (!probing_ || stats_.recording), stats_.recording ? L"stop" : L"record");
+        stats_.ready && !stats_.finishing && (!probing_ || stats_.recording), stats_.recording ? L"stop" : L"record");
     button(
         L"pause", L"", {right - 204, y + 18, right - 160, y + 58}, [this] { command(1); }, false,
-        stats_.recording, stats_.paused ? L"play" : L"pause");
+        stats_.recording && !stats_.finishing, stats_.paused ? L"play" : L"pause");
     button(
         L"replay", L"Save replay", {right - 148, y + 18, right - 12, y + 58},
         [this] { command(2); }, false, stats_.replay, L"replay");
