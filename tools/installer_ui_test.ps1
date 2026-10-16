@@ -13,6 +13,7 @@ public class SetupUi {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -31,7 +32,7 @@ function Find-Control([IntPtr]$Root, [string]$Pattern) {
 function Click-Control([IntPtr]$Root, [string]$Pattern) {
  $h=Find-Control $Root $Pattern
  if ($h -eq [IntPtr]::Zero) { throw "Installer control absent: $Pattern" }
- [void][SetupUi]::SendMessage($h,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)
+ [void][SetupUi]::PostMessage($h,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)
  Start-Sleep -Milliseconds 450
 }
 $wizardProcess=$null
