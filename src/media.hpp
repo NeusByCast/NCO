@@ -26,6 +26,7 @@ struct Packet {
     int64_t us() const {
         return av_rescale_q(p->pts, tb, {1, 1000000});
     }
+    double quantizer() const;
     bool key() const {
         return stream == 0 && (p->flags & AV_PKT_FLAG_KEY);
     }
@@ -52,6 +53,11 @@ class VideoEncoder {
     Com<ID3D11VideoContext> vc_;
     Com<ID3D11VideoProcessorEnumerator> enumerator_;
     Com<ID3D11VideoProcessor> processor_;
+    struct InputView { ID3D11Texture2D* texture = nullptr; Com<ID3D11VideoProcessorInputView> view; };
+    struct OutputView { ID3D11Texture2D* texture = nullptr; UINT slice = 0; Com<ID3D11VideoProcessorOutputView> view; };
+    std::array<InputView, 2> inputViews_{};
+    std::array<OutputView, 8> outputViews_{};
+    size_t nextInputView_ = 0, nextOutputView_ = 0;
     Size input_, output_;
     FitRect viewport_{};
     bool gpu_ = false;

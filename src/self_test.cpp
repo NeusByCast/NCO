@@ -16,6 +16,9 @@ struct StreamResult {
     size_t packets = 0;
     int64_t first = INT64_MAX, end = INT64_MIN;
     AVCodecID codec = AV_CODEC_ID_NONE;
+    int width = 0, height = 0;
+    AVColorRange range = AVCOL_RANGE_UNSPECIFIED;
+    AVColorSpace space = AVCOL_SPC_UNSPECIFIED;
 };
 
 std::vector<StreamResult> inspect(const std::filesystem::path& path) {
@@ -25,8 +28,14 @@ std::vector<StreamResult> inspect(const std::filesystem::path& path) {
     try {
         avcheck(avformat_find_stream_info(in, nullptr), "Test stream info");
         std::vector<StreamResult> result(in->nb_streams);
-        for (unsigned i = 0; i < in->nb_streams; ++i)
-            result[i].codec = in->streams[i]->codecpar->codec_id;
+        for (unsigned i = 0; i < in->nb_streams; ++i) {
+            const auto p = in->streams[i]->codecpar;
+            result[i].codec = p->codec_id;
+            result[i].width = p->width;
+            result[i].height = p->height;
+            result[i].range = p->color_range;
+            result[i].space = p->color_space;
+        }
         int status;
         while ((status = av_read_frame(in, packet)) >= 0) {
             auto& s = result.at(size_t(packet->stream_index));
@@ -106,6 +115,9 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
     require(sawFirstVideoPacket && firstVideoPacketWasKey,
             "Encoder did not mark its forced first frame as a keyframe");
     auto streams = inspect(path);
+    require(streams[0].width == 320 && streams[0].height == 180 &&
+            streams[0].range == AVCOL_RANGE_MPEG && streams[0].space == AVCOL_SPC_BT709,
+            "Encoded resolution or BT.709 limited-range metadata changed");
     require(streams.size() == 2 && streams[0].packets == 90,
             "Video/audio stream count or video frame count mismatch");
     require(std::abs(streams[0].first - streams[1].first) < 100000,
@@ -267,6 +279,9 @@ void videoMatrix(const std::filesystem::path& dir) {
                     mux.write(p);
                 mux.close();
                 auto result = inspect(path);
+                const auto expected = resolution(config.resolutionMode, config.width, config.height, {320, 180});
+                require(result[0].width == expected.w && result[0].height == expected.h,
+                        "Quality preset or rate control changed the recording resolution");
                 require(result[0].packets == size_t(fps), "FPS/quality matrix lost a video frame");
                 require(result[0].end - result[0].first > 850000, "FPS matrix duration incorrect");
             }
@@ -332,7 +347,7 @@ int mediaSelfTest() {
     try {
         av_log_set_level(AV_LOG_ERROR);
         encoderConfigurationSelfTest();
-        report << "PASS real FFmpeg AMF options at all five quality levels: no lookahead/pre-analysis or B-frame input dependency\n";
+        report << "PASS AMF H264/HEVC/AV1: all quality/rate modes, bounded overlap, no analysis/preencode, balanced workload, quantizer limits and packet statistics\n";
         platformSelfTest(report);
         {
             Config config;

@@ -5,13 +5,14 @@ namespace nco {
 struct EngineStats {
     bool recording = false, paused = false, replay = false, ready = false, gpu = false, finishing = false,
          starting = false;
-    uint64_t frames = 0, dropped = 0, freshFrames = 0;
+    uint64_t frames = 0, encodedFrames = 0, dropped = 0, freshFrames = 0;
     size_t replayBytes = 0, encodeQueue = 0, readbackQueue = 0;
     uint64_t readbackDropped = 0;
     int64_t durationUs = 0;
     Size output{};
     double actualFps = 0, bitrateMbps = 0, prepareMs = 0, submitMs = 0;
     double encodeMs = 0, captureMs = 0, cpuPercent = 0, workingSetMiB = 0;
+    double quantizerAvg = -1, quantizerMax = -1;
     std::string encoder, encoderAdapter;
     bool gpuTexturePath = false;
 };

@@ -111,6 +111,8 @@ void Engine::run(std::stop_token token) {
     int64_t epoch = 0, nextVideo = 0, nextFrame = 0, audioPts = 0, recordStart = 0, pauseStart = 0,
             removed = 0, lastPreview = 0, lastUsage = 0;
     uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0, previousReadbackDrops = 0;
+    double quantizerSum = 0, quantizerMax = -1;
+    uint64_t quantizerCount = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
     bool suspended = false, stoppingRecording = false, drainingVideo = false, previewDirty = true;
     int64_t stopCutoff = 0, stopRequested = 0, drainRequested = 0, latestVideoUs = -1;
@@ -208,7 +210,9 @@ void Engine::run(std::stop_token token) {
         local.encoderAdapter = video->adapter();
         local.gpuTexturePath = video->gpu();
         local.gpu = video->selected().find("lib") != 0;
-        local.frames = local.dropped = local.freshFrames = 0;
+        local.frames = local.encodedFrames = local.dropped = local.freshFrames = 0;
+        quantizerSum = quantizerCount = 0;
+        quantizerMax = local.quantizerAvg = local.quantizerMax = -1;
         local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = 0;
         local.output = resolution(cfg.resolutionMode, cfg.width, cfg.height, capture->size());
         usageFrames = videoBytes = usageBytes = previousReadbackDrops = 0;
@@ -228,6 +232,13 @@ void Engine::run(std::stop_token token) {
         for (auto& p : ps) {
             if (p.stream == 0) {
                 videoBytes += p.bytes();
+                ++local.encodedFrames;
+                const double qp = p.quantizer();
+                if (qp >= 0) {
+                    quantizerSum += qp;
+                    ++quantizerCount;
+                    quantizerMax = std::max(quantizerMax, qp);
+                }
                 latestVideoUs = std::max(latestVideoUs, p.us());
             }
             if (replay)
@@ -589,14 +600,21 @@ void Engine::run(std::stop_token token) {
                 if (GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory)))
                     local.workingSetMiB = double(memory.WorkingSetSize) / 1048576;
                 if (lastUsage && video) {
-                    local.actualFps = double(local.frames - usageFrames) * 1000000 / (now - lastUsage);
+                    local.actualFps = double(local.encodedFrames - usageFrames) * 1000000 / (now - lastUsage);
                     local.bitrateMbps = double(videoBytes - usageBytes) * 8 / (now - lastUsage);
                 }
-                usageFrames = local.frames;
+                local.quantizerAvg = quantizerCount ? quantizerSum / quantizerCount : -1;
+                local.quantizerMax = quantizerMax;
+                quantizerSum = quantizerCount = 0;
+                quantizerMax = -1;
+                usageFrames = local.encodedFrames;
                 usageBytes = videoBytes;
                 lastUsage = now;
                 if (video)
                     Log::get().write("Frames=" + std::to_string(local.frames) +
+                                         " encoded_frames=" + std::to_string(local.encodedFrames) +
+                                         " qp_avg=" + std::to_string(local.quantizerAvg) +
+                                         " qp_max=" + std::to_string(local.quantizerMax) +
                                          " dropped=" + std::to_string(local.dropped) +
                                          " fps=" + std::to_string(local.actualFps) +
                                          " video_Mbps=" + std::to_string(local.bitrateMbps) +

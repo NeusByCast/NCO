@@ -332,6 +332,8 @@ void Capture::copyFrame(ID3D11Texture2D* raw) {
     D3D11_VIDEO_COLOR black{};
     black.RGBA.A = 1;
     scaleContext_->VideoProcessorSetOutputBackgroundColor(scaleProcessor_.Get(), FALSE, &black);
+    scaleContext_->VideoProcessorSetStreamAutoProcessingMode(scaleProcessor_.Get(), 0, FALSE);
+    scaleContext_->VideoProcessorSetStreamFrameFormat(scaleProcessor_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable = TRUE;
     stream.pInputSurface = input.Get();
@@ -477,6 +479,8 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t, boo
         desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         check(thumbDevice_->CreateVideoProcessorEnumerator(&desc, &thumbEnum_), "Preview scaler");
         check(thumbDevice_->CreateVideoProcessor(thumbEnum_.Get(), 0, &thumbProcessor_), "Preview processor");
+        thumbContext_->VideoProcessorSetStreamAutoProcessingMode(thumbProcessor_.Get(), 0, FALSE);
+        thumbContext_->VideoProcessorSetStreamFrameFormat(thumbProcessor_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
         D3D11_TEXTURE2D_DESC d{};
         d.Width = thumbSize_.w;
         d.Height = thumbSize_.h;

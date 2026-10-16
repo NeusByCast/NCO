@@ -9,6 +9,7 @@
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 }
 namespace nco {
@@ -18,6 +19,14 @@ void avcheck(int n, const char* w) {
         av_strerror(n, b, sizeof(b));
         throw std::runtime_error(std::string(w) + ": " + b);
     }
+}
+double Packet::quantizer() const {
+    if (!p || stream != 0) return -1;
+    size_t size = 0;
+    const auto data = av_packet_get_side_data(p.get(), AV_PKT_DATA_QUALITY_STATS, &size);
+    if (!data || size < 4) return -1;
+    const uint32_t quality = AV_RL32(data);
+    return quality == UINT32_MAX ? -1 : double(quality) / FF_QP2LAMBDA;
 }
 static void mediaLog(void*, int level, const char* format, va_list args) {
     if (level > AV_LOG_WARNING)
@@ -170,9 +179,9 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     }
     if (name.find("amf") != std::string::npos) {
         av_opt_set(c->priv_data, "usage", "lowlatency", 0);
-        c->flags |= AV_CODEC_FLAG_LOW_DELAY;
-        const char* amfQuality = cfg.quality == 0 ? "speed"
-                               : cfg.quality < 3 ? "balanced" : "quality";
+        // Keep one frame of encoder overlap. LOW_DELAY makes FFmpeg poll each
+        // submitted surface immediately; it is unnecessary for file recording.
+        const char* amfQuality = cfg.quality == 0 ? "speed" : "balanced";
         int qualityResult = av_opt_set(c->priv_data, "quality", amfQuality, 0);
         if (qualityResult < 0)
             Log::get().write("AMF quality preset could not be set: " + std::string(amfQuality));
@@ -191,12 +200,19 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
 
         // Lookahead needs more input surfaces than a bounded real-time worker
         // can supply. Enabling it can stall AMF before the first output packet.
+        av_opt_set_int(c->priv_data, "preencode", 0, 0);
         av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
         av_opt_set_int(c->priv_data, "pa_lookahead_buffer_depth", 0, 0);
         av_opt_set_int(c->priv_data, "vbaq", 0, 0);
+        // Image quality and encoder workload are separate: preserve detail
+        // without selecting the slower AMF Quality processing preset.
+        constexpr int qp[] = {36, 32, 27, 23, 19};
+        c->qmin = 0;
+        const int scale = name == "av1_amf" ? 4 : 1;
+        c->qmax = rateControl == 0 ? (qp[std::clamp(cfg.quality, 0, 4)] + 3) * scale
+                                  : name == "av1_amf" ? 255 : 51;
         if (rateControl == 1) {
-            constexpr int qp[] = {36, 32, 27, 23, 19};
-            const int selectedQp = qp[std::clamp(cfg.quality, 0, 4)];
+            const int selectedQp = qp[std::clamp(cfg.quality, 0, 4)] * scale;
             av_opt_set_int(c->priv_data, "qp_i", selectedQp, 0);
             av_opt_set_int(c->priv_data, "qp_p", selectedQp, 0);
         }
@@ -222,23 +238,47 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     }
 }
 void encoderConfigurationSelfTest() {
-    const auto codec = avcodec_find_encoder_by_name("h264_amf");
-    if (!codec) throw std::runtime_error("AMF configuration regression requires compiled AMF support");
-    for (int quality = 0; quality <= 4; ++quality) {
-        auto release = [](AVCodecContext* c) { avcodec_free_context(&c); };
-        std::unique_ptr<AVCodecContext, decltype(release)> context(avcodec_alloc_context3(codec), release);
-        if (!context) throw std::bad_alloc();
-        Config config;
-        config.quality = quality;
-        configureVideo(context.get(), "h264_amf", config, {1920, 1080}, AV_PIX_FMT_D3D11);
-        int64_t analysis = -1, lookahead = -1, depth = 0;
-        avcheck(av_opt_get_int(context->priv_data, "preanalysis", 0, &analysis), "Read AMF analysis setting");
-        avcheck(av_opt_get_int(context->priv_data, "pa_lookahead_buffer_depth", 0, &lookahead), "Read AMF lookahead setting");
-        avcheck(av_opt_get_int(context->priv_data, "async_depth", 0, &depth), "Read AMF queue setting");
-        if (analysis || lookahead || depth <= lookahead || context->max_b_frames ||
-            !(context->flags & AV_CODEC_FLAG_LOW_DELAY))
-            throw std::runtime_error("Real-time AMF configuration can block waiting for future input frames");
+    for (const char* name : {"h264_amf", "hevc_amf", "av1_amf"}) {
+        const auto codec = avcodec_find_encoder_by_name(name);
+        if (!codec) throw std::runtime_error("AMF regression requires compiled encoder support");
+        for (int quality = 0; quality <= 4; ++quality) for (int rate = 0; rate <= 2; ++rate) {
+            auto release = [](AVCodecContext* c) { avcodec_free_context(&c); };
+            std::unique_ptr<AVCodecContext, decltype(release)> c(avcodec_alloc_context3(codec), release);
+            if (!c) throw std::bad_alloc();
+            Config config;
+            config.quality = quality;
+            config.rateControl = rate;
+            configureVideo(c.get(), name, config, {1920, 1080}, AV_PIX_FMT_D3D11);
+            auto option = [&](const char* key) {
+                int64_t value = -1;
+                avcheck(av_opt_get_int(c->priv_data, key, 0, &value), key);
+                return value;
+            };
+            // Each codec uses its own numeric preset values. Resolve the named
+            // constant with FFmpeg instead of assuming H.264 values fit HEVC/AV1.
+            const auto preset = av_opt_find(c->priv_data, quality == 0 ? "speed" : "balanced",
+                                           "quality", 0, 0);
+            constexpr int qp[] = {36, 32, 27, 23, 19};
+            const int scale = std::string(name) == "av1_amf" ? 4 : 1;
+            if (option("preencode") || option("preanalysis") || option("pa_lookahead_buffer_depth") ||
+                option("async_depth") < 3 || c->max_b_frames || (c->flags & AV_CODEC_FLAG_LOW_DELAY) ||
+                !preset || option("quality") != preset->default_val.i64)
+                throw std::runtime_error("AMF real-time processing or bounded frame overlap regressed");
+            if (c->qmin != 0 || (rate == 0 && c->qmax != (qp[quality] + 3) * scale) ||
+                (rate == 1 && (option("qp_i") != qp[quality] * scale || option("qp_p") != qp[quality] * scale)) ||
+                (rate == 2 && c->rc_max_rate != c->bit_rate))
+                throw std::runtime_error("AMF quality/rate-control settings regressed");
+        }
     }
+    Packet packet{std::shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); }), 0, {1, 60}};
+    if (!packet.p) throw std::bad_alloc();
+    if (packet.quantizer() != -1) throw std::runtime_error("Missing quantizer must be unknown");
+    auto data = av_packet_new_side_data(packet.p.get(), AV_PKT_DATA_QUALITY_STATS, 4);
+    if (!data) throw std::bad_alloc();
+    AV_WL32(data, 22 * FF_QP2LAMBDA);
+    if (packet.quantizer() != 22) throw std::runtime_error("Reported quantizer scale is incorrect");
+    packet.stream = 1;
+    if (packet.quantizer() != -1) throw std::runtime_error("Audio cannot report video quantizers");
 }
 std::vector<EncoderChoice> probeEncoders() {
     av_log_set_callback(mediaLog);
@@ -412,6 +452,25 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                           "GPU color conversion");
                     check(vd_->CreateVideoProcessor(enumerator_.Get(), 0, &processor_),
                           "GPU video processor");
+                    vc_->VideoProcessorSetStreamAutoProcessingMode(processor_.Get(), 0, FALSE);
+                    vc_->VideoProcessorSetStreamFrameFormat(processor_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+                    RECT src{0, 0, input_.w, input_.h};
+                    RECT dst{viewport_.x, viewport_.y, viewport_.x + viewport_.w, viewport_.y + viewport_.h};
+                    RECT full{0, 0, output_.w, output_.h};
+                    vc_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &src);
+                    vc_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &dst);
+                    vc_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE, &full);
+                    D3D11_VIDEO_COLOR black{};
+                    black.YCbCr = {16.f / 255, .5f, .5f, 1};
+                    vc_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
+                    D3D11_VIDEO_PROCESSOR_COLOR_SPACE rgb{};
+                    rgb.RGB_Range = 0;
+                    rgb.YCbCr_Matrix = 1;
+                    D3D11_VIDEO_PROCESSOR_COLOR_SPACE yuv{};
+                    yuv.YCbCr_Matrix = 1;
+                    yuv.Nominal_Range = 1;
+                    vc_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &rgb);
+                    vc_->VideoProcessorSetOutputColorSpace(processor_.Get(), &yuv);
                     } catch (const std::exception& error) {
                         if (gpu_) throw;
                         Log::get().write(std::string("GPU upload conversion unavailable; using CPU conversion: ") + error.what());
@@ -497,8 +556,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     " quality=" + std::to_string(cfg.quality) + " container=" + cfg.format +
                     " GPU_NV12_readback=" + std::to_string(nv12Readback_));
                 const char* preset = name.find("amf") != std::string::npos
-                                         ? cfg.quality == 0 ? "speed"
-                                           : cfg.quality < 3 ? "balanced" : "quality"
+                                         ? cfg.quality == 0 ? "speed" : "balanced"
                                      : name.find("nvenc") != std::string::npos
                                          ? cfg.quality >= 3 ? "p5/hq" : cfg.quality >= 1 ? "p4" : "p3/ull"
                                      : name.find("qsv") != std::string::npos ? "veryfast"
@@ -512,7 +570,9 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                                  " bitrate_role=" + bitrateRole +
                                  " target_bps=" + std::to_string(codec_->bit_rate) +
                                  " peak_bps=" + std::to_string(codec_->rc_max_rate) +
-                                 " lookahead=disabled" +
+                                 " qmin=" + std::to_string(codec_->qmin) +
+                                 " qmax=" + std::to_string(codec_->qmax) +
+                                 " preencode=disabled lookahead=disabled video_auto_processing=disabled" +
                                  " pixel_format=" +
                                  (fmt == AV_PIX_FMT_D3D11 ? "d3d11/nv12"
                                   : fmt == AV_PIX_FMT_NV12 ? "nv12/4:2:0"
@@ -579,44 +639,38 @@ void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
     sws_scale(sws_, src, lines, 0, input_.h, dest, frame_->linesize);
 }
 void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice) {
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
-    id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    id.Texture2D.MipSlice = 0;
-    id.Texture2D.ArraySlice = 0;
-    Com<ID3D11VideoProcessorInputView> iv;
-    check(vd_->CreateVideoProcessorInputView(t, enumerator_.Get(), &id, &iv), "GPU input view");
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
-    D3D11_TEXTURE2D_DESC textureDesc{};
-    out->GetDesc(&textureDesc);
-    od.ViewDimension = textureDesc.ArraySize > 1 ? D3D11_VPOV_DIMENSION_TEXTURE2DARRAY
-                                                 : D3D11_VPOV_DIMENSION_TEXTURE2D;
-    od.Texture2DArray.MipSlice = 0;
-    od.Texture2DArray.FirstArraySlice = slice;
-    od.Texture2DArray.ArraySize = 1;
-    Com<ID3D11VideoProcessorOutputView> ov;
-    check(vd_->CreateVideoProcessorOutputView(out, enumerator_.Get(), &od, &ov),
-          "GPU output view");
-    RECT src{0, 0, input_.w, input_.h};
-    RECT dst{viewport_.x, viewport_.y, viewport_.x + viewport_.w, viewport_.y + viewport_.h};
-    RECT full{0, 0, output_.w, output_.h};
-    vc_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &src);
-    vc_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &dst);
-    vc_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE, &full);
-    D3D11_VIDEO_COLOR black{};
-    black.YCbCr = {16.f / 255, .5f, .5f, 1};
-    vc_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE rgb{};
-    rgb.RGB_Range = 0;
-    rgb.YCbCr_Matrix = 1;
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE yuv{};
-    yuv.YCbCr_Matrix = 1;
-    yuv.Nominal_Range = 1;
-    vc_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &rgb);
-    vc_->VideoProcessorSetOutputColorSpace(processor_.Get(), &yuv);
+    auto input = std::find_if(inputViews_.begin(), inputViews_.end(),
+                              [&](const auto& v) { return v.texture == t; });
+    if (input == inputViews_.end()) {
+        input = inputViews_.begin() + nextInputView_;
+        nextInputView_ = (nextInputView_ + 1) % inputViews_.size();
+        *input = {};
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC desc{};
+        desc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        check(vd_->CreateVideoProcessorInputView(t, enumerator_.Get(), &desc, &input->view), "GPU input view");
+        input->texture = t;
+    }
+    auto output = std::find_if(outputViews_.begin(), outputViews_.end(),
+                               [&](const auto& v) { return v.texture == out && v.slice == slice; });
+    if (output == outputViews_.end()) {
+        output = outputViews_.begin() + nextOutputView_;
+        nextOutputView_ = (nextOutputView_ + 1) % outputViews_.size();
+        *output = {};
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC desc{};
+        D3D11_TEXTURE2D_DESC texture{};
+        out->GetDesc(&texture);
+        desc.ViewDimension = texture.ArraySize > 1 ? D3D11_VPOV_DIMENSION_TEXTURE2DARRAY
+                                                  : D3D11_VPOV_DIMENSION_TEXTURE2D;
+        desc.Texture2DArray.FirstArraySlice = slice;
+        desc.Texture2DArray.ArraySize = 1;
+        check(vd_->CreateVideoProcessorOutputView(out, enumerator_.Get(), &desc, &output->view), "GPU output view");
+        output->texture = out;
+        output->slice = slice;
+    }
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable = TRUE;
-    stream.pInputSurface = iv.Get();
-    check(vc_->VideoProcessorBlt(processor_.Get(), ov.Get(), 0, 1, &stream),
+    stream.pInputSurface = input->view.Get();
+    check(vc_->VideoProcessorBlt(processor_.Get(), output->view.Get(), 0, 1, &stream),
           "GPU scale and NV12 conversion");
 }
 bool VideoEncoder::drainReadback(std::vector<Packet>& output) {

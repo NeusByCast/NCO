@@ -63,6 +63,7 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
         << " encoder_adapter=" << s.encoderAdapter << " GPU_texture_path=" << s.gpuTexturePath
         << " output=" << s.output.w << 'x' << s.output.h
         << " fps=" << s.actualFps << " video_Mbps=" << s.bitrateMbps
+        << " encoded_frames=" << s.encodedFrames << " qp_avg=" << s.quantizerAvg << " qp_max=" << s.quantizerMax
         << " frames=" << s.frames << " dropped=" << s.dropped << " fresh_capture_frames=" << s.freshFrames
         << " encode_queue=" << s.encodeQueue << " readback_queue=" << s.readbackQueue
         << " readback_dropped=" << s.readbackDropped << " encode_ms=" << s.encodeMs << " prepare_ms=" << s.prepareMs
@@ -72,6 +73,7 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
     out << "\r\nHow to interpret\r\n"
            "60 FPS needs a complete frame every 16.67 ms. High prepare_ms indicates GPU conversion/readback waits; high submit_ms indicates encoder backpressure.\r\n"
            "Capture and encoder adapters may differ on hybrid laptops. 'Hardware encoding with frame upload' is hardware encoding, with CPU transport.\r\n"
+           "QP statistics report encoder quantization when available (-1 means unavailable). Higher QP means more compression, not a resolution change.\r\n"
            "Actual bitrate can be low for a still desktop; output dimensions do not automatically decrease under load.\r\n"
            "Dropped frames are cumulative since pipeline restart. Audio discontinuities are WASAPI endpoint events, not proof of audible corruption.\r\n"
            "\r\nRecent timestamped log (bounded to 1 MiB)\r\n";
