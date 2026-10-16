@@ -150,6 +150,8 @@ void UI::updatePreviewTimer() {
     const bool active = page_ == 0 && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) && !closing_;
     if (active != previewTimerActive_) {
         previewTimerActive_ = active;
+        if (engine_)
+            engine_->visible(active);
         if (active)
             previewTimer_.arm(16667, 16);
         else
@@ -1223,7 +1225,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_SIZE:
         updatePreviewTimer();
         if (engine_)
-            engine_->visible(w != SIZE_MINIMIZED);
+            engine_->visible(w != SIZE_MINIMIZED && page_ == 0);
         if (target_ && w != SIZE_MINIMIZED)
             target_->Resize(D2D1::SizeU(LOWORD(l), HIWORD(l)));
         if (w == SIZE_MINIMIZED) {

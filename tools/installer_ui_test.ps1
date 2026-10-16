@@ -36,7 +36,7 @@ function Click-Control([IntPtr]$Root, [string]$Pattern) {
  Start-Sleep -Milliseconds 450
 }
 $wizardProcess=$null
-$p=Start-Process 'output/NCO-Setup.exe' -ArgumentList '/SP- /NORESTART /LANG=english' -PassThru
+$p=Start-Process 'output/NCO-Setup.exe' -ArgumentList '/SP- /NORESTART /LANG=english /CURRENTUSER' -PassThru
 try {
  $deadline=(Get-Date).AddSeconds(20)
  $script:wizard=[IntPtr]::Zero
@@ -87,6 +87,6 @@ try {
  }
  if (!$p.WaitForExit(5000)) { throw 'Installer preview did not close after cancellation' }
 } finally {
- if ($wizardProcess -and !$wizardProcess.HasExited) { $wizardProcess.Kill();$wizardProcess.WaitForExit() }
- if (!$p.HasExited) { $p.Kill();$p.WaitForExit() }
+ try { if ($wizardProcess -and !$wizardProcess.HasExited) { $wizardProcess.Kill();$wizardProcess.WaitForExit() } } catch { Write-Warning "Wizard cleanup: $_" }
+ try { if (!$p.HasExited) { $p.Kill();$p.WaitForExit() } } catch { Write-Warning "Launcher cleanup: $_" }
 }
