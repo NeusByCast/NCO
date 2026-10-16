@@ -1,7 +1,7 @@
 name: Windows build and installer
 on:
   push:
-    branches: [main]
+    branches: [main, codex/build-recorder-fix]
   workflow_dispatch:
 permissions:
   contents: write
@@ -119,14 +119,9 @@ jobs:
         if: always()
         with:
           name: NCO-build-and-test
-          path: |
-            output/NCO-Setup.exe
-            build/Testing/Temporary/LastTest.log
-            build/dependencies.txt
-            build/Release/NCO.exe
-            nco-self-test/
-            dist/TESTING.md
+          path: output/NCO-Setup.exe
       - name: Publish tested preview installer
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh

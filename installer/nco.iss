@@ -47,7 +47,6 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "..\dist\NCO.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\THIRD_PARTY.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\TESTING.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
