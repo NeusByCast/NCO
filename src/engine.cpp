@@ -213,7 +213,7 @@ void Engine::run(std::stop_token token) {
         local.frames = local.encodedFrames = local.dropped = local.freshFrames = 0;
         quantizerSum = quantizerCount = 0;
         quantizerMax = local.quantizerAvg = local.quantizerMax = -1;
-        local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = 0;
+        local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = local.bitrateMbps = 0;
         local.output = resolution(cfg.resolutionMode, cfg.width, cfg.height, capture->size());
         usageFrames = videoBytes = usageBytes = previousReadbackDrops = 0;
         latestVideoUs = -1;

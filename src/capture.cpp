@@ -121,10 +121,10 @@ void Capture::open(const Source& source, int backend) {
         if (chosen)
             break;
     }
-    // For WGC, create the capture pool on the high-performance adapter so
-    // capture and hardware encoding can share D3D textures on hybrid-GPU PCs.
-    // Desktop Duplication still has to run on the adapter driving the monitor.
-    if (backend != 2) {
+    // Auto display capture stays on the display adapter. On hybrid laptops
+    // this keeps capture/conversion off the GPU running the game. Window or
+    // explicitly requested WGC capture can share the preferred encoder GPU.
+    if (backend == 1 || source.window) {
         Com<IDXGIFactory6> modern;
         Com<IDXGIAdapter1> performance;
         if (SUCCEEDED(factory.As(&modern)) &&
@@ -185,8 +185,6 @@ void Capture::open(const Source& source, int backend) {
                 dup_.Reset();
                 Log::get().write(std::string("Desktop Duplication unavailable: ") + e.what());
             }
-        } else if (backend == 0 && !source.window) {
-            Log::get().write("Auto capture: preferring WGC on the high-performance GPU to avoid cross-adapter frame readback");
         }
         if (!duplicated) {
         try {

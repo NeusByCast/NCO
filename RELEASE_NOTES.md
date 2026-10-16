@@ -32,3 +32,5 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - AMF recording disables preencode and permits one-frame processing overlap; it retains bounded queues, no B frames and no lookahead. Ultra VBR caps quantization at QP 22 for H.264/HEVC; CQP remains QP 19. AV1 uses its corresponding quantizer index scale. CBR retains its bitrate constraint.
 - Recording conversion disables driver automatic video processing and reuses bounded input/output processor views. Static conversion state is configured once per pipeline.
 - Diagnostics distinguish submitted frames from encoded output and report available packet QP statistics. Recording tests verify saved resolution and BT.709 limited-range metadata.
+
+- Auto display/region capture uses Desktop Duplication on the display adapter first, keeping conversion off the gaming GPU on hybrid systems. Hardware encoding remains on the preferred adapter through the bounded asynchronous NV12 transfer path. Explicit WGC selection and window capture retain their preferred-GPU path.
