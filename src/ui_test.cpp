@@ -129,6 +129,9 @@ void UI::smokeControls() {
         require(popup_.open, "Dropdown did not open on release");
         clickControl(L"fps");
         require(!popup_.open, "Second click did not close the same dropdown");
+        clickControl(L"fps");
+        require(popup_.items.size() == 3, "Frame rate dropdown must offer only 15, 30 and 60 FPS");
+        clickControl(L"fps");
         choose(L"fps", 0);
         require(cfg_.fps == 15, "FPS dropdown did not commit");
         choose(L"quality", 4);
@@ -136,7 +139,6 @@ void UI::smokeControls() {
         choose(L"resolution", 5);
         number(L"width", 1280, &Config::width);
         number(L"height", 720, &Config::height);
-        number(L"customfps", 96, &Config::fps);
         number(L"bitrate", 8000, &Config::bitrateKbps);
         toggle(L"remux", &Config::remux);
         choose(L"format", 3);
@@ -195,14 +197,21 @@ void UI::smokeControls() {
         require(cfg_.captureBackend == 2, "Capture compatibility dropdown failed");
         report << "PASS interactive shortcut capture/clear/duplicates and Settings controls, full diagnostic export and move-loop messages\n";
         if (exclusion_) {
+            previewTimerActive_ = false;
+            tweens_.clear();
+            popup_.open = popup_.closing = false;
+            navigationStart_ = hoverStart_ = clockUs() - 500000;
             toast(L"Recording started");
             toastStart_ = clockUs() - 500000;
+            ValidateRect(hwnd_, nullptr);
             SendMessageW(hwnd_, WM_TIMER, 2, 0);
             require(toastVisible_, "Toast expired before one second");
+            require(!GetUpdateRect(hwnd_, nullptr, FALSE),
+                    "A static page was repainted for every toast animation tick");
             toastStart_ = clockUs() - 1100000;
             SendMessageW(hwnd_, WM_TIMER, 2, 0);
             require(!toastVisible_, "Toast did not expire after one second");
-            report << "PASS one-second notification lifetime boundaries\n";
+            report << "PASS toast lifetime and animation without repainting a static page\n";
         }
         page(0);
         clickControl(L"max");

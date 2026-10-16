@@ -155,7 +155,7 @@ void UI::updatePreviewTimer() {
         if (engine_)
             engine_->visible(active);
         if (active)
-            previewTimer_.arm(16667, 16);
+            previewTimer_.arm(33333, 33);
         else
             previewTimer_.cancel();
     }
@@ -640,21 +640,12 @@ void UI::settings() {
     if (page_ == 1) {
         pick(
             L"fps", L"Frame rate", std::to_wstring(cfg_.fps) + L" FPS",
-            {L"15 FPS", L"30 FPS", L"60 FPS", L"Custom"},
-            cfg_.fps == 15   ? 0
-            : cfg_.fps == 30 ? 1
-            : cfg_.fps == 60 ? 2
-                             : 3,
+            {L"15 FPS", L"30 FPS", L"60 FPS"},
+            cfg_.fps == 15 ? 0 : cfg_.fps == 30 ? 1 : 2,
             [this](int i) {
-                if (i == 3) {
-                    cfg_.fps = 120;
-                } else
-                    cfg_.fps = i == 0 ? 15 : i == 1 ? 30 : 60;
+                cfg_.fps = i == 0 ? 15 : i == 1 ? 30 : 60;
                 save();
             },
-            !locked);
-        num(
-            L"customfps", L"Custom FPS (1–240)", cfg_.fps, 1, 240, [this](int n) { cfg_.fps = n; },
             !locked);
         const std::vector<std::wstring> res = {L"Native", L"720p", L"1080p",
                                                L"1440p",  L"4K",   L"Custom"};
@@ -1489,14 +1480,18 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
                         ShowWindow(toast_, SW_SHOWNOACTIVATE);
                 }
             }
-            invalidate();
             bool tweenActive = false;
             for (auto& v : tweens_)
                 if (now - v.second.start < 180000)
                     tweenActive = true;
-            if (!toastVisible_ && !tweenActive && !popup_.closing &&
-                now - navigationStart_ > 180000 && now - hoverStart_ > 180000 &&
-                (!popup_.open || now - popup_.start > 180000))
+            const bool animationActive = tweenActive || popup_.closing ||
+                (popup_.open && now - popup_.start <= 180000) ||
+                now - navigationStart_ <= 180000 || now - hoverStart_ <= 180000;
+            // The dashboard preview timer owns its paint cadence. Do not make a toast
+            // or other animation trigger a second full-window draw on the same UI thread.
+            if (animationActive && !previewTimerActive_ && !IsIconic(h) && IsWindowVisible(h))
+                invalidate();
+            if (!toastVisible_ && !animationActive)
                 KillTimer(h, 2);
         }
         return 0;

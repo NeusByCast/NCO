@@ -27,7 +27,9 @@ Config Config::load() {
         auto i = v.find(k);
         return i == v.end() ? d : i->second;
     };
-    c.fps = num("fps", 60, 1, 240);
+    c.fps = num("fps", 60, 15, 60);
+    if (c.fps != 15 && c.fps != 30 && c.fps != 60)
+        c.fps = 60;
     c.captureBackend = num("captureBackend", 0, 0, 2);
     c.resolutionMode = num("resolution", 0, 0, 5);
     c.width = num("width", 1920, 64, 7680);

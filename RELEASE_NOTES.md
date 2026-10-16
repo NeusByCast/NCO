@@ -16,3 +16,7 @@ Download NCO-Setup.exe. Updates preserve user settings.
 Replay packets are kept in timestamp order when asynchronous video arrives after audio; initial audio is retained until its first video keyframe. Logs separately show GPU readback queue occupancy/rejections and CPU encoder queue depth.
 
 Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, and supports arrow-key selection plus Enter. Windows regression tests select offscreen options through actual wheel messages.
+
+- Dashboard preview redraw is capped at 30 FPS and shares its paint cadence with animations; notification ticks no longer trigger unnecessary full-window redraws.
+- Recording FPS choices are 15, 30 and 60 only. The custom field and Custom dropdown option are removed; unsupported saved FPS values migrate to 60.
+- The attached diagnostic could not be opened in this session; current recording quality and GPU load still require a readable current diagnostic and real-PC retest.

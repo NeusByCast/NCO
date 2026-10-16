@@ -21,7 +21,7 @@ struct P {
 };
 int main() {
     using namespace nco;
-    for (int fps : {15, 30, 60, 96, 144, 240}) {
+    for (int fps : {15, 30, 60}) {
         constexpr int64_t epoch = 1234567;
         int64_t previous = epoch - 1;
         for (int64_t frame = 0; frame < fps * 10; ++frame) {
