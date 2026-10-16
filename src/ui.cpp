@@ -154,7 +154,11 @@ int UI::run(int show) {
     return smoke_ && renderFailed_ ? 1 : int(msg.wParam);
 }
 void UI::updatePreviewTimer() {
-    const bool active = page_ == 0 && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) && !closing_;
+    // Recording pauses the live preview, so the dashboard needs only its
+    // one-second status refresh. Avoid repainting the whole Direct2D page at
+    // 30 FPS while there is no preview bitmap to display.
+    const bool active = page_ == 0 && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) &&
+                        !closing_ && !stats_.recording;
     if (active != previewTimerActive_) {
         previewTimerActive_ = active;
         if (engine_)
@@ -289,7 +293,7 @@ D2D1_COLOR_F UI::hoverColor(const std::wstring& id, D2D1_COLOR_F base) {
         tween.to = float(hover);
         tween.start = clockUs();
         if (cfg_.animations)
-            SetTimer(hwnd_, 2, 16, nullptr);
+            SetTimer(hwnd_, 2, 33, nullptr);
     }
     const float fraction = cfg_.animations ? ease(float(clockUs() - tween.start) / 150000) : 1;
     const float t = tween.from + (tween.to - tween.from) * fraction;
@@ -968,13 +972,13 @@ void UI::dismissPopup() {
     invalidate();
 }
 void UI::draw() {
-    updatePreviewTimer();
     resources();
     RECT client;
     GetClientRect(hwnd_, &client);
     w_ = client.right * 96 / dpi_;
     h_ = client.bottom * 96 / dpi_;
     stats_ = engine_ ? engine_->stats() : EngineStats{};
+    updatePreviewTimer();
     if (engine_ && cfg_.preview) {
         auto p = engine_->preview(bitmapSerial_);
         if (p.serial && p.serial != bitmapSerial_) {
@@ -1315,10 +1319,10 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_ENTERSIZEMOVE:
-        SetTimer(h, 4, 16, nullptr);
+        // Moving the window does not change its contents. Avoid forcing a full
+        // synchronous Direct2D redraw during every step of the system move loop.
         return 0;
     case WM_EXITSIZEMOVE:
-        KillTimer(h, 4);
         invalidate();
         return 0;
     case WM_SIZE:
@@ -1366,7 +1370,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_MOUSELEAVE:
         hover_.clear();
         hoverStart_ = clockUs();
-        SetTimer(h, 2, 16, nullptr);
+        SetTimer(h, 2, 33, nullptr);
         invalidate();
         return 0;
     case WM_MOUSEMOVE: {
@@ -1467,13 +1471,6 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         return reinterpret_cast<LRESULT>(b);
     }
     case WM_TIMER:
-        if (w == 4) {
-            if (page_ == 0 && !IsIconic(h)) {
-                invalidate();
-                UpdateWindow(h);
-            }
-            return 0;
-        }
         if (w == 3) {
             screenshot(h, smokeStep_);
             if (++smokeStep_ >= 6) {

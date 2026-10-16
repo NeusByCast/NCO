@@ -898,8 +898,11 @@ static bool verifyContents(const std::filesystem::path& p,
             ++counts[packet->stream_index];
         av_packet_unref(packet);
     }
-    good = good && ret == AVERROR_EOF && !counts.empty() &&
-           std::all_of(counts.begin(), counts.end(), [](size_t n) { return n > 0; });
+    // Audio is optional at runtime: an endpoint can be unavailable or the user
+    // can record a very short clip before an audio encoder emits its first
+    // packet. The video track is required for a useful recording; requiring
+    // packets in every declared audio track incorrectly rejects such files.
+    good = good && ret == AVERROR_EOF && !counts.empty() && counts.front() > 0;
     if (expected)
         good = good && counts == *expected;
     av_packet_free(&packet);

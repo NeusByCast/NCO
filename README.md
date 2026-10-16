@@ -1,6 +1,6 @@
 # NCO
 
-A native C++20 Windows recorder with a warm brown interface, D3D11 capture/processing, hardware encoding, WASAPI audio and encoded instant replay. **Engineering preview: real hardware recording and performance qualification are still required.** See [TESTING.md](TESTING.md).
+A native C++20 Windows recorder with a warm brown interface, D3D11 capture and processing, hardware encoding, WASAPI audio, and encoded instant replay. See [TESTING.md](TESTING.md) for current validation coverage and known limits.
 
 ## Install
 
@@ -34,7 +34,7 @@ ctest --test-dir build -C Release --output-on-failure
 build/Release/NCO.exe --self-test
 ```
 
-The Actions workflow prepares licenses, corresponding source and distribution files, compiles `installer/nco.iss`, tests the installer, and publishes a clearly marked preview only after those checks succeed. Outputs are under `output/NCO-Setup.exe`. Static linkage includes GPL x264; NCO and its combined binary are GPLv3-or-later.
+The Actions workflow prepares licenses, corresponding source and distribution files, compiles `installer/nco.iss`, tests the installer, and publishes a tested prerelease. Outputs are under `output/NCO-Setup.exe`. Static linkage includes GPL x264; NCO and its combined binary are GPLv3-or-later.
 
 Portable core checks on Linux:
 
