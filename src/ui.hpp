@@ -70,6 +70,8 @@ class UI {
     EngineStats stats_;
     void draw();
     void updatePreviewTimer();
+    bool animationActiveAt(int64_t now) const;
+    bool animationFrameNeedsPaint(int64_t now) const;
     void resources();
     void text(std::wstring s, D2D1_RECT_F rect, int size = 14,
               D2D1_COLOR_F color = D2D1::ColorF(0xece2d8), bool bold = false, bool center = false);

@@ -196,6 +196,22 @@ void UI::smokeControls() {
         choose(L"captureApi", 2);
         require(cfg_.captureBackend == 2, "Capture compatibility dropdown failed");
         report << "PASS interactive shortcut capture/clear/duplicates and Settings controls, full diagnostic export and move-loop messages\n";
+        tweens_.clear();
+        popup_.open = popup_.closing = false;
+        const int64_t staticSince = clockUs() - 500000;
+        navigationStart_ = hoverStart_ = staticSince;
+        previewTimerActive_ = false;
+        require(!animationFrameNeedsPaint(clockUs()),
+                "A static settings page should not repaint for toast ticks");
+        previewTimerActive_ = true;
+        require(!animationFrameNeedsPaint(clockUs()),
+                "Toast ticks should defer dashboard paints to the preview cadence");
+        previewTimerActive_ = false;
+        hoverStart_ = clockUs();
+        require(animationFrameNeedsPaint(clockUs()),
+                "Active UI transitions must still receive animation paints");
+        hoverStart_ = staticSince;
+        report << "PASS notification ticks avoid duplicate static/dashboard paints\n";
         if (exclusion_) {
             previewTimerActive_ = false;
             tweens_.clear();

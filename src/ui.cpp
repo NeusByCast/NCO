@@ -1167,6 +1167,17 @@ void UI::notify(std::string msg, bool error) {
     }
     invalidate();
 }
+bool UI::animationActiveAt(int64_t now) const {
+    const bool tweenActive = std::any_of(tweens_.begin(), tweens_.end(), [now](const auto& item) {
+        return now - item.second.start < 180000;
+    });
+    return tweenActive || popup_.closing || (popup_.open && now - popup_.start <= 180000) ||
+           now - navigationStart_ <= 180000 || now - hoverStart_ <= 180000;
+}
+bool UI::animationFrameNeedsPaint(int64_t now) const {
+    return animationActiveAt(now) && !previewTimerActive_ && hwnd_ && !IsIconic(hwnd_) &&
+           IsWindowVisible(hwnd_);
+}
 void UI::toast(std::wstring msg) {
     if (!exclusion_) {
         message_ = std::move(msg);
@@ -1480,18 +1491,12 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
                         ShowWindow(toast_, SW_SHOWNOACTIVATE);
                 }
             }
-            bool tweenActive = false;
-            for (auto& v : tweens_)
-                if (now - v.second.start < 180000)
-                    tweenActive = true;
-            const bool animationActive = tweenActive || popup_.closing ||
-                (popup_.open && now - popup_.start <= 180000) ||
-                now - navigationStart_ <= 180000 || now - hoverStart_ <= 180000;
+            const bool activeAnimation = animationActiveAt(now);
             // The dashboard preview timer owns its paint cadence. Do not make a toast
             // or other animation trigger a second full-window draw on the same UI thread.
-            if (animationActive && !previewTimerActive_ && !IsIconic(h) && IsWindowVisible(h))
+            if (animationFrameNeedsPaint(now))
                 invalidate();
-            if (!toastVisible_ && !animationActive)
+            if (!toastVisible_ && !activeAnimation)
                 KillTimer(h, 2);
         }
         return 0;
