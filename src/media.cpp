@@ -144,8 +144,8 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         c->thread_count = std::clamp(int(std::thread::hardware_concurrency() / 2), 1, 8);
     }
     if (name.find("nvenc") != std::string::npos) {
-        av_opt_set(c->priv_data, "preset", "p3", 0);
-        av_opt_set(c->priv_data, "tune", "ull", 0);
+        av_opt_set(c->priv_data, "preset", cfg.quality >= 2 ? "p5" : "p3", 0);
+        av_opt_set(c->priv_data, "tune", cfg.quality >= 2 ? "hq" : "ull", 0);
         av_opt_set_int(c->priv_data, "rc-lookahead", 0, 0);
     }
     if (name.find("amf") != std::string::npos) {
@@ -153,7 +153,10 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
         av_opt_set_int(c->priv_data, "frame_skipping", 0, 0);
         av_opt_set_int(c->priv_data, "async_depth", 3, 0);
-        av_opt_set(c->priv_data, "quality", cfg.quality >= 2 ? "balanced" : "speed", 0);
+        const char* amfQuality = cfg.quality >= 2 ? "quality"
+                               : cfg.quality == 1 ? "balanced"
+                                                  : "speed";
+        av_opt_set(c->priv_data, "quality", amfQuality, 0);
         av_opt_set(c->priv_data, "rc", "vbr_peak", 0);
         c->rc_max_rate = std::min<int64_t>(150000000, c->bit_rate * 2);
         c->rc_buffer_size = int(std::min<int64_t>(300000000, c->bit_rate * 2));
@@ -426,6 +429,24 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     " bitrate_bps=" + std::to_string(codec_->bit_rate) +
                     " quality=" + std::to_string(cfg.quality) + " container=" + cfg.format +
                     " GPU_NV12_readback=" + std::to_string(nv12Readback_));
+                const char* preset = name.find("amf") != std::string::npos
+                                         ? cfg.quality >= 2 ? "quality"
+                                           : cfg.quality == 1 ? "balanced" : "speed"
+                                     : name.find("nvenc") != std::string::npos
+                                         ? cfg.quality >= 2 ? "p5/hq" : "p3/ull"
+                                     : name.find("qsv") != std::string::npos ? "veryfast"
+                                                                              : "codec-default";
+                Log::get().write("Encoder quality mode=" + std::string(preset) +
+                                 " rate_control=" + (name.find("amf") != std::string::npos
+                                                          ? "vbr_peak"
+                                                          : name.find("nvenc") != std::string::npos
+                                                                ? "vbr"
+                                                                : "codec-default") +
+                                 " max_rate_bps=" + std::to_string(codec_->rc_max_rate) +
+                                 " pixel_format=" +
+                                 (fmt == AV_PIX_FMT_D3D11 ? "d3d11/nv12"
+                                  : fmt == AV_PIX_FMT_NV12 ? "nv12/4:2:0"
+                                                           : "yuv420p/4:2:0"));
                 Log::get().write("Encoder: " + name +
                                  (gpu_ ? " GPU texture path" : name.find("lib") == 0 ? " software encoding" : " hardware encoding with frame upload") +
                                  " adapter=" + std::to_string(attempt));

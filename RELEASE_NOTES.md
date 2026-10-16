@@ -11,6 +11,7 @@
 - Recording pauses live-preview scaling/readback to leave more GPU bandwidth for the game and encoder; the dashboard explains when preview is paused.
 - The custom title bar no longer requests a native caption, preventing duplicate Windows minimize/maximize/close glyphs while retaining native resizing.
 - Automatic remux now logs whether it is skipped because MKV is already selected, queued, started, completed, or failed. Successful remux completion is reported; the settings hint explains the MKV behavior.
+- High, Very High and Ultra use higher motion recording bitrates; AMD AMF High+ now selects its Quality preset and NVIDIA High+ selects NVENC P5/HQ. Diagnostics record the effective preset, rate-control mode, peak rate and 4:2:0 pixel format.
 
 Automated Windows tests exercise region input messages, region replacement, popup release/clip handling, cached notification rendering at four requested DPI values, and a deliberately slow software encoder worker. These are not physical-GPU benchmarks or proof of smoothness on the user's laptop. Real-game FPS, GPU readback, live capture/audio synchronization, physical DPI layouts, and notification capture exclusion still require hardware testing.
 
