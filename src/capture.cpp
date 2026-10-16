@@ -97,7 +97,7 @@ void Capture::open(const Source& source, int backend) {
     source_ = source;
     Com<IDXGIFactory1> factory;
     check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "DXGI factory");
-    Com<IDXGIAdapter1> chosen;
+    Com<IDXGIAdapter1> chosen, outputAdapter;
     Com<IDXGIOutput> output;
     HMONITOR monitor = source.monitor ? source.monitor
                                       : MonitorFromWindow(source.window, MONITOR_DEFAULTTONEAREST);
@@ -113,6 +113,7 @@ void Capture::open(const Source& source, int backend) {
             o->GetDesc(&d);
             if (d.Monitor == monitor) {
                 chosen = a;
+                outputAdapter = a;
                 output = o;
                 break;
             }
@@ -120,7 +121,10 @@ void Capture::open(const Source& source, int backend) {
         if (chosen)
             break;
     }
-    if (source.window) {
+    // For WGC, create the capture pool on the high-performance adapter so
+    // capture and hardware encoding can share D3D textures on hybrid-GPU PCs.
+    // Desktop Duplication still has to run on the adapter driving the monitor.
+    if (backend != 2) {
         Com<IDXGIFactory6> modern;
         Com<IDXGIAdapter1> performance;
         if (SUCCEEDED(factory.As(&modern)) &&
@@ -132,15 +136,28 @@ void Capture::open(const Source& source, int backend) {
                 chosen = performance;
         }
     }
-    D3D_FEATURE_LEVEL level;
-    check(D3D11CreateDevice(chosen.Get(),
-                            chosen ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-                            nullptr, 0, D3D11_SDK_VERSION, &device_, &level, &context_),
-          "D3D11 device");
-    Com<ID3D11Multithread> mt;
-    check(context_.As(&mt), "D3D context protection");
-    mt->SetMultithreadProtected(TRUE);
+    auto createDevice = [&](IDXGIAdapter1* adapter) {
+        device_.Reset();
+        context_.Reset();
+        D3D_FEATURE_LEVEL level;
+        check(D3D11CreateDevice(adapter,
+                                adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+                                nullptr,
+                                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                                nullptr, 0, D3D11_SDK_VERSION, &device_, &level, &context_),
+              "D3D11 device");
+        Com<ID3D11Multithread> mt;
+        check(context_.As(&mt), "D3D context protection");
+        mt->SetMultithreadProtected(TRUE);
+    };
+    auto sameAdapter = [](IDXGIAdapter1* a, IDXGIAdapter1* b) {
+        if (!a || !b) return a == b;
+        DXGI_ADAPTER_DESC1 da{}, db{};
+        return SUCCEEDED(a->GetDesc1(&da)) && SUCCEEDED(b->GetDesc1(&db)) &&
+               da.AdapterLuid.HighPart == db.AdapterLuid.HighPart &&
+               da.AdapterLuid.LowPart == db.AdapterLuid.LowPart;
+    };
+    createDevice(chosen.Get());
     auto openDuplication = [&] {
         if (!output)
             throw std::runtime_error("No compatible display output");
@@ -160,7 +177,7 @@ void Capture::open(const Source& source, int backend) {
         openDuplication();
     else {
         bool duplicated = false;
-        if (backend == 0 && !source.window) {
+        if (backend == 0 && !source.window && sameAdapter(chosen.Get(), outputAdapter.Get())) {
             try {
                 openDuplication();
                 duplicated = true;
@@ -168,6 +185,8 @@ void Capture::open(const Source& source, int backend) {
                 dup_.Reset();
                 Log::get().write(std::string("Desktop Duplication unavailable: ") + e.what());
             }
+        } else if (backend == 0 && !source.window) {
+            Log::get().write("Auto capture: preferring WGC on the high-performance GPU to avoid cross-adapter frame readback");
         }
         if (!duplicated) {
         try {
@@ -228,6 +247,10 @@ void Capture::open(const Source& source, int backend) {
             pool_ = nullptr;
             item_ = nullptr;
             Log::get().write("WGC unavailable; using Desktop Duplication");
+            if (outputAdapter) {
+                chosen = outputAdapter;
+                createDevice(outputAdapter.Get());
+            }
             openDuplication();
         }
         }

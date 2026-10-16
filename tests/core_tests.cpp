@@ -47,6 +47,7 @@ int main() {
     }
     CHECK(rejected);
     CHECK(bitrate({1920, 1080}, 60, 4, false) > bitrate({1920, 1080}, 30, 2, false));
+    CHECK(bitrate({1920, 1080}, 60, 2, false) >= 24000000);
     CHECK(!containerCompatible("webm", "h264_nvenc"));
     CHECK(containerCompatible("webm", "av1_amf"));
     CHECK(containerCompatible("webm", "auto"));

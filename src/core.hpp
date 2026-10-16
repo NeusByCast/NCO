@@ -34,7 +34,9 @@ inline Size resolution(int mode, int w, int h, Size native) {
     return {s.w & ~1, s.h & ~1};
 }
 inline int bitrate(Size s, int fps, int quality, bool efficient) {
-    constexpr double bpp[] = {0.045, 0.075, 0.14, 0.20, 0.28};
+    // High-motion game footage needs more bits than general desktop capture.
+    // These remain resolution/FPS scaled and are capped below 150 Mbps.
+    constexpr double bpp[] = {0.06, 0.10, 0.20, 0.28, 0.36};
     return std::clamp(static_cast<int>(s.w * double(s.h) * fps * bpp[std::clamp(quality, 0, 4)] *
                                        (efficient ? .65 : 1.0)),
                       500000, 150000000);
