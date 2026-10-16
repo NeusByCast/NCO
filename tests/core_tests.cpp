@@ -66,6 +66,12 @@ int main() {
     CHECK(!s.empty() && s.front().key());
     CHECK(s.front().t >= 22000000 && s.front().t <= 24000000);
     CHECK(s.back().t - s.front().t >= 15000000);
+    CHECK(s.back().t - s.front().t <= 17000000);
+    CHECK(r.durationUs() <= 17000000);
+    CHECK(r.keyframes() > 0);
+    r.seconds = 15;
+    auto shortReplay = r.snapshot();
+    CHECK(shortReplay.front().key() && shortReplay.back().t - shortReplay.front().t <= 17000000);
     r.cap = 5;
     r.push({40000000, true, 20});
     CHECK(r.bytes() == 0);

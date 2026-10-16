@@ -258,12 +258,12 @@ void UI::smokeControls() {
         for (const auto& control : controls_)
             if (control.enabled && control.id.rfind(L"option", 0) == 0) {
                 ++visibleOptions;
-                require(control.rect.bottom <= popup_.anchor.top - 5,
-                        "Upward popup did not stay attached above its field");
+                require(control.rect.top >= popup_.anchor.bottom + 5,
+                        "Dropdown option overlapped its field");
             }
         require(visibleOptions == 3, "Completed popup hid selectable rows");
         popup_.open = popup_.closing = false;
-        report << "PASS upward dropdown anchors to field and clips unrevealed hit targets\n";
+        report << "PASS dropdown opens below its field and clips unrevealed hit targets\n";
         report << "UNVERIFIED capture/audio/replay operation, folder dialogs, every hardware encoder, "
                   "notification exclusion, real DPI scaling and animation quality\n";
     } catch (const std::exception& error) {

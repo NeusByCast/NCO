@@ -346,6 +346,16 @@ void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
 void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selected,
                   std::function<void(int)> choose) {
     finishEdit(true);
+    // Make room below the control so the themed menu does not cover earlier
+    // settings rows. The extra scroll range is active only while a menu is open.
+    const float desiredBottom = h_ - 300.f;
+    if (rect.bottom > desiredBottom) {
+        const int shift = int(std::ceil(rect.bottom - desiredBottom));
+        maxScroll_ += 260;
+        scroll_ = std::min(scroll_ + shift, maxScroll_);
+        rect.top -= shift;
+        rect.bottom -= shift;
+    }
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
     popup_.owner = pressed_;
     popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - popup_.visible));
@@ -872,7 +882,7 @@ void UI::settings() {
 
     }
     // Clamp after layout: avoids blank scroll regions after changing a section.
-    maxScroll_ = std::max(0, int(y + scroll_ + 90 - h_));
+    maxScroll_ = std::max(0, int(y + scroll_ + 90 - h_)) + (popup_.open ? 260 : 0);
     if (scroll_ > maxScroll_) {
         scroll_ = maxScroll_;
         invalidate();
@@ -887,9 +897,8 @@ void UI::popup() {
         return;
     }
     const float below = h_ - 44 - a.anchor.bottom;
-    const float above = a.anchor.top - 116;
-    const bool upward = below < 264 && above > below;
-    const float available = std::max(48.f, upward ? above : below);
+    const bool upward = false;
+    const float available = std::max(48.f, below);
     int visible = std::max(1, std::min({7, int(a.items.size()), int((available - 12) / 36)}));
     a.visible = visible;
     if (!a.positioned) {

@@ -379,7 +379,11 @@ void Engine::run(std::stop_token token) {
                     if (frameIndex > nextFrame)
                         local.dropped += uint64_t(frameIndex - nextFrame);
                     nextFrame = frameIndex + 1;
-                    if (video->submit(texture.Get(), frameIndex, forceKey))
+                    // Keep replay independently decodable with a one-second GOP.
+                    // Some hardware encoders otherwise ignore the configured GOP
+                    // interval when replay is the only consumer of the packets.
+                    const bool replayKey = replay && frameIndex % cfg.fps == 0;
+                    if (video->submit(texture.Get(), frameIndex, forceKey || replayKey))
                         forceKey = false;
                     else
                         ++local.dropped;
@@ -503,6 +507,8 @@ void Engine::run(std::stop_token token) {
                                          " capture_ms=" + std::to_string(local.captureMs) +
                                          " fresh_frames=" + std::to_string(local.freshFrames) +
                                          " replay_MiB=" + std::to_string(ring.bytes() / 1048576.0) +
+                                         " replay_seconds=" + std::to_string(ring.durationUs() / 1000000.0) +
+                                         " replay_keyframes=" + std::to_string(ring.keyframes()) +
                                          " cpu_percent=" + std::to_string(local.cpuPercent) +
                                          " working_set_MiB=" + std::to_string(local.workingSetMiB) +
                                          " mic_discontinuities=" + std::to_string(mic.discontinuities.load()) +

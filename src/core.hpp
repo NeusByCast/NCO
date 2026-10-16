@@ -113,11 +113,28 @@ template <class T> class ReplayRing {
         }
     }
     std::vector<T> snapshot() const {
-        if (packets_.empty() || !packets_.front().key()) return {};
-        return {packets_.begin(), packets_.end()};
+        if (packets_.empty()) return {};
+        const int64_t cutoff = packets_.back().us() - int64_t(std::clamp(seconds, 1, 60)) * 1000000;
+        // Start at the newest keyframe at or before the requested window. This
+        // keeps the clip decodable and limits the GOP overhang to one GOP.
+        auto start = packets_.end();
+        for (auto it = packets_.begin(); it != packets_.end(); ++it)
+            if (it->key() && it->us() <= cutoff) start = it;
+        if (start == packets_.end())
+            start = std::find_if(packets_.begin(), packets_.end(),
+                                 [](const T& packet) { return packet.key(); });
+        if (start == packets_.end()) return {};
+        return {start, packets_.end()};
     }
     size_t bytes() const {
         return bytes_;
+    }
+    int64_t durationUs() const {
+        return packets_.size() < 2 ? 0 : packets_.back().us() - packets_.front().us();
+    }
+    size_t keyframes() const {
+        return size_t(std::count_if(packets_.begin(), packets_.end(),
+                                    [](const T& packet) { return packet.key(); }));
     }
 };
 } // namespace nco
