@@ -11,9 +11,12 @@ function Run-Checked {
 }
 function Measure-UI {
     param([string]$Executable, [string]$Report)
+    $result = Join-Path $root 'nco-self-test/ui-benchmark.txt'
+    Remove-Item $result -Force -ErrorAction SilentlyContinue
     $process = Start-Process $Executable -ArgumentList '--ui-smoke-test' -Wait -PassThru
     if ($process.ExitCode) { throw "UI benchmark failed ($($process.ExitCode))" }
-    Copy-Item 'nco-self-test/ui-benchmark.txt' $Report -Force
+    if (!(Test-Path $result)) { throw 'UI benchmark did not write a new result' }
+    Copy-Item $result $Report -Force
     Write-Output $Report
     Get-Content $Report
 }
@@ -32,6 +35,8 @@ Measure-UI -Executable "$baselineBuild/Release/NCO.exe" -Report 'build/ui-baseli
 $original = [IO.File]::ReadAllBytes("$root/src/ui_test.cpp")
 try {
     Copy-Item 'tools/ui_benchmark.cpp' 'src/ui_test.cpp' -Force
+    # Copy-Item preserves the source timestamp; force MSBuild to compile this replacement.
+    (Get-Item 'src/ui_test.cpp').LastWriteTimeUtc = [DateTime]::UtcNow
     Run-Checked -Program 'cmake' -Arguments @('--build', 'build', '--config', 'Release', '--parallel')
     Measure-UI -Executable "$root/build/Release/NCO.exe" -Report 'build/ui-current.txt'
 } finally {
