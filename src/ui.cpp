@@ -474,7 +474,7 @@ void UI::dashboard() {
         false, !locked);
     y += 88;
     const bool tight = h_ < 620;
-    const float maximumPreview = std::max(50.f, h_ - (tight ? 488.f : 510.f));
+    const float maximumPreview = std::max(50.f, h_ - (tight ? 416.f : 426.f));
     float ph =
         std::min(cfg_.compact ? 150.f : std::clamp(width * 9 / 16, 180.f, 320.f), maximumPreview);
     D2D1_RECT_F pr{left, y, right, y + ph};
@@ -502,58 +502,6 @@ void UI::dashboard() {
                save();
            });
     y += ph + 16;
-    float cw = (width - 30) / 4;
-    const std::wstring q[] = {L"Low", L"Medium", L"High", L"Very High", L"Ultra"};
-    const std::wstring res[] = {L"Native", L"720p", L"1080p", L"1440p", L"4K", L"Custom"};
-    auto quick = [&](int index, std::wstring id, std::wstring label, std::wstring value,
-                     std::vector<std::wstring> items, int selected,
-                     std::function<void(int)> choose) {
-        float x = left + index * (cw + 10);
-        text(label, {x, y, x + cw, y + 20}, 11, muted);
-        D2D1_RECT_F r{x, y + 26, x + cw, y + 62};
-        button(
-            id, value, r,
-            [this, r, items, selected, choose] { dropdown(r, items, selected, choose); }, false,
-            !locked);
-    };
-    quick(0, L"fps", L"Frame rate", std::to_wstring(cfg_.fps) + L" FPS",
-          {L"15 FPS", L"30 FPS", L"60 FPS", L"Custom…"},
-          cfg_.fps == 15   ? 0
-          : cfg_.fps == 30 ? 1
-                           : 2,
-          [this](int i) {
-              if (i == 3) {
-                  page_ = 1;
-                  scroll_ = 0;
-              } else {
-                  cfg_.fps = i == 0 ? 15 : i == 1 ? 30 : 60;
-                  save();
-              }
-          });
-    quick(1, L"resolution", L"Resolution", res[cfg_.resolutionMode], {res, res + 6},
-          cfg_.resolutionMode, [this](int i) {
-              cfg_.resolutionMode = i;
-              if (i == 5) {
-                  page_ = 1;
-                  scroll_ = 0;
-              }
-              save();
-          });
-    quick(2, L"quality", L"Quality", q[cfg_.quality], {q, q + 5}, cfg_.quality, [this](int i) {
-        cfg_.quality = i;
-        save();
-    });
-    quick(3, L"encoder", L"Encoder", cfg_.encoder == "auto" ? L"Auto" : wide(cfg_.encoder),
-          {L"Automatic selection", L"Encoder settings…"}, 0, [this](int i) {
-              if (i) {
-                  page_ = 1;
-                  scroll_ = 0;
-              } else {
-                  cfg_.encoder = "auto";
-                  save();
-              }
-          });
-    y += tight ? 72 : 84;
     round({left, y, right, y + 76}, panel);
     int64_t sec = stats_.durationUs / 1000000;
     wchar_t duration[32];

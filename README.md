@@ -8,7 +8,7 @@ Download **NCO-Setup.exe** from [Releases](https://github.com/NeusByCast/NCO/rel
 
 ## Use
 
-Choose a display or window on the dashboard, set FPS/resolution/quality/encoder, and start recording. F9 starts/stops, F10 pauses/resumes, F8 saves replay by default. Microphone and speaker buttons mute independently. Enable replay in Replay settings; it continues independently of recording. Configure all shortcuts in Hotkeys, including single keys. Valid settings save immediately to `%LOCALAPPDATA%\NCO\settings.ini`.
+Choose a display or window on the dashboard and start recording. Configure FPS, resolution, quality and encoder in Recording settings. F9 starts/stops, F10 pauses/resumes, F8 saves replay by default. Microphone and speaker buttons mute independently. Enable replay in Replay settings; it continues independently of recording. Configure all shortcuts in Hotkeys, including single keys. Valid settings save immediately to `%LOCALAPPDATA%\NCO\settings.ini`.
 
 Encoding/capture settings are locked while recording or replay buffering. Stop recording and disable replay before changing them. Audio devices and mute/volume can change live. A source resize/disconnection may require reselecting the source. Errors appear in the status area and `%LOCALAPPDATA%\NCO\diagnostic.log`.
 
