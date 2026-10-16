@@ -846,9 +846,12 @@ void UI::settings() {
             dialog.lpstrTitle = L"Save remuxed recording (no re-encoding)";
             dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT;
             if (!GetSaveFileNameW(&dialog)) return;
-            if (std::filesystem::exists(output))
+            const wchar_t* extensions[] = {L".mp4", L".mkv", L".mov", L".webm"};
+            std::filesystem::path target(output);
+            target.replace_extension(extensions[std::clamp(dialog.nFilterIndex, DWORD(1), DWORD(4)) - 1]);
+            if (std::filesystem::exists(target))
                 throw std::runtime_error("Choose a new filename; existing recordings are preserved");
-            engine_->remux(source, output);
+            engine_->remux(source, target);
             message_ = L"Remux queued";
         });
         y += 68;

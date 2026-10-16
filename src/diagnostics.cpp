@@ -32,13 +32,17 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
             DXGI_ADAPTER_DESC1 d{};
             adapter->GetDesc1(&d);
             LARGE_INTEGER driver{};
-            adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver);
+            const bool driverKnown = SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &driver));
             out << "Adapter[" << index << "]=" << utf8(d.Description)
                 << " vendor=" << d.VendorId << " device=" << d.DeviceId
                 << " dedicated_MiB=" << d.DedicatedVideoMemory / 1048576
-                << " shared_MiB=" << d.SharedSystemMemory / 1048576
-                << " driver=" << HIWORD(driver.HighPart) << '.' << LOWORD(driver.HighPart)
-                << '.' << HIWORD(driver.LowPart) << '.' << LOWORD(driver.LowPart) << "\r\n";
+                << " shared_MiB=" << d.SharedSystemMemory / 1048576;
+            if (driverKnown)
+                out << " driver=" << HIWORD(driver.HighPart) << '.' << LOWORD(driver.HighPart)
+                    << '.' << HIWORD(driver.LowPart) << '.' << LOWORD(driver.LowPart);
+            else
+                out << " driver=unavailable_from_DXGI";
+            out << "\r\n";
         }
     }
     out << "\r\nConfiguration\r\nFPS=" << c.fps << " resolution_mode=" << c.resolutionMode

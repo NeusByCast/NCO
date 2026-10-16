@@ -321,6 +321,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     codec_->hw_frames_ctx = av_buffer_ref(frames_);
                 }
                 if (capture && (gpu_ || fmt == AV_PIX_FMT_NV12)) {
+                    try {
                     check(capture->device()->QueryInterface(IID_PPV_ARGS(&vd_)),
                           "D3D video device");
                     check(capture->context()->QueryInterface(IID_PPV_ARGS(&vc_)),
@@ -338,6 +339,14 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                           "GPU color conversion");
                     check(vd_->CreateVideoProcessor(enumerator_.Get(), 0, &processor_),
                           "GPU video processor");
+                    } catch (const std::exception& error) {
+                        if (gpu_) throw;
+                        Log::get().write(std::string("GPU upload conversion unavailable; using CPU conversion: ") + error.what());
+                        processor_.Reset();
+                        enumerator_.Reset();
+                        vd_.Reset();
+                        vc_.Reset();
+                    }
                 }
                 if (attempt >= 0) {
                     device_ = adapterDevice(attempt);
@@ -364,8 +373,10 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     const int* coeff = sws_getCoefficients(SWS_CS_ITU709);
                     sws_setColorspaceDetails(sws_, coeff, 1, coeff, 0, 0, 1 << 16, 1 << 16);
                 }
-                nv12Readback_ = !gpu_ && capture && fmt == AV_PIX_FMT_NV12;
+                nv12Readback_ = !gpu_ && capture && fmt == AV_PIX_FMT_NV12 && processor_;
+
                 if (nv12Readback_) {
+                    try {
                     D3D11_TEXTURE2D_DESC d{};
                     d.Width = output_.w;
                     d.Height = output_.h;
@@ -379,6 +390,12 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
                     check(capture->device()->CreateTexture2D(&d, nullptr, &uploadStage_),
                           "NV12 upload staging texture");
+                    } catch (const std::exception& error) {
+                        Log::get().write(std::string("NV12 readback unavailable; retaining hardware encoding with CPU conversion: ") + error.what());
+                        nv12Readback_ = false;
+                        uploadNv12_.Reset();
+                        uploadStage_.Reset();
+                    }
                 }
                 selected = name;
                 Log::get().write("Video output=" + std::to_string(output_.w) + "x" +
@@ -448,45 +465,45 @@ void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
     sws_scale(sws_, src, lines, 0, input_.h, dest, frame_->linesize);
 }
 void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice) {
-        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
-        id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-        id.Texture2D.MipSlice = 0;
-        id.Texture2D.ArraySlice = 0;
-        Com<ID3D11VideoProcessorInputView> iv;
-        check(vd_->CreateVideoProcessorInputView(t, enumerator_.Get(), &id, &iv), "GPU input view");
-        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
-        D3D11_TEXTURE2D_DESC textureDesc{};
-        out->GetDesc(&textureDesc);
-        od.ViewDimension = textureDesc.ArraySize > 1 ? D3D11_VPOV_DIMENSION_TEXTURE2DARRAY
-                                                     : D3D11_VPOV_DIMENSION_TEXTURE2D;
-        od.Texture2DArray.MipSlice = 0;
-        od.Texture2DArray.FirstArraySlice = slice;
-        od.Texture2DArray.ArraySize = 1;
-        Com<ID3D11VideoProcessorOutputView> ov;
-        check(vd_->CreateVideoProcessorOutputView(out, enumerator_.Get(), &od, &ov),
-              "GPU output view");
-        RECT src{0, 0, input_.w, input_.h};
-        RECT dst{viewport_.x, viewport_.y, viewport_.x + viewport_.w, viewport_.y + viewport_.h};
-        RECT full{0, 0, output_.w, output_.h};
-        vc_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &src);
-        vc_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &dst);
-        vc_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE, &full);
-        D3D11_VIDEO_COLOR black{};
-        black.YCbCr = {16.f / 255, .5f, .5f, 1};
-        vc_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
-        D3D11_VIDEO_PROCESSOR_COLOR_SPACE rgb{};
-        rgb.RGB_Range = 0;
-        rgb.YCbCr_Matrix = 1;
-        D3D11_VIDEO_PROCESSOR_COLOR_SPACE yuv{};
-        yuv.YCbCr_Matrix = 1;
-        yuv.Nominal_Range = 1;
-        vc_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &rgb);
-        vc_->VideoProcessorSetOutputColorSpace(processor_.Get(), &yuv);
-        D3D11_VIDEO_PROCESSOR_STREAM stream{};
-        stream.Enable = TRUE;
-        stream.pInputSurface = iv.Get();
-        check(vc_->VideoProcessorBlt(processor_.Get(), ov.Get(), 0, 1, &stream),
-              "GPU scale and NV12 conversion");
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
+    id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    id.Texture2D.MipSlice = 0;
+    id.Texture2D.ArraySlice = 0;
+    Com<ID3D11VideoProcessorInputView> iv;
+    check(vd_->CreateVideoProcessorInputView(t, enumerator_.Get(), &id, &iv), "GPU input view");
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
+    D3D11_TEXTURE2D_DESC textureDesc{};
+    out->GetDesc(&textureDesc);
+    od.ViewDimension = textureDesc.ArraySize > 1 ? D3D11_VPOV_DIMENSION_TEXTURE2DARRAY
+                                                 : D3D11_VPOV_DIMENSION_TEXTURE2D;
+    od.Texture2DArray.MipSlice = 0;
+    od.Texture2DArray.FirstArraySlice = slice;
+    od.Texture2DArray.ArraySize = 1;
+    Com<ID3D11VideoProcessorOutputView> ov;
+    check(vd_->CreateVideoProcessorOutputView(out, enumerator_.Get(), &od, &ov),
+          "GPU output view");
+    RECT src{0, 0, input_.w, input_.h};
+    RECT dst{viewport_.x, viewport_.y, viewport_.x + viewport_.w, viewport_.y + viewport_.h};
+    RECT full{0, 0, output_.w, output_.h};
+    vc_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &src);
+    vc_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &dst);
+    vc_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE, &full);
+    D3D11_VIDEO_COLOR black{};
+    black.YCbCr = {16.f / 255, .5f, .5f, 1};
+    vc_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE rgb{};
+    rgb.RGB_Range = 0;
+    rgb.YCbCr_Matrix = 1;
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE yuv{};
+    yuv.YCbCr_Matrix = 1;
+    yuv.Nominal_Range = 1;
+    vc_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &rgb);
+    vc_->VideoProcessorSetOutputColorSpace(processor_.Get(), &yuv);
+    D3D11_VIDEO_PROCESSOR_STREAM stream{};
+    stream.Enable = TRUE;
+    stream.pInputSurface = iv.Get();
+    check(vc_->VideoProcessorBlt(processor_.Get(), ov.Get(), 0, 1, &stream),
+          "GPU scale and NV12 conversion");
 }
 std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool key) {
     const auto begin = clockUs();
