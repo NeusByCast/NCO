@@ -5,7 +5,9 @@
 - Window source titles refresh when browser tabs change. Source changes clear old preview pixels immediately and reject frames from previous configurations; WGC consumes the newest queued frame.
 - A separate encoder worker uses two immutable GPU mailboxes and a bounded packet queue. Capture/audio no longer directly wait for encoder submission. Keyframe preroll preserves audio while asynchronous recording/resume starts.
 - Cross-GPU NV12 readback uses three staging slots with nonblocking polling during capture. Original timestamps are retained; stop drains pending frames. Full queues drop input instead of accumulating latency.
-- Higher motion-oriented automatic bitrate defaults; AMD peak-constrained VBR with burst headroom and Balanced quality for High/Very High/Ultra. Manual bitrate remains supported.
+- Recording settings now default to 35,000 kbps and allow typed bitrate entry; zero remains available for automatic bitrate on older or manually edited configurations.
+- Added VBR peak constrained, CQP and CBR controls. VBR uses the selected bitrate as target and 1.5x as peak; CBR caps at target, and CQP uses quality-preset QP values.
+- AMF Low/Medium/High/Very High/Ultra now map to speed/balanced/quality/quality/quality. Ultra requests pre-analysis and VBAQ when exposed by the active FFmpeg AMF encoder; diagnostics report option support.
 - Notifications render one premultiplied bitmap and animate its DWM position/alpha. No repeated font creation, window-region replacement, or paint-based redraw; placement stays fixed to the monitor chosen at notification start.
 - Diagnostics include encoder queue depth and readback rejection in drop counts.
 - Recording pauses live-preview scaling/readback to leave more GPU bandwidth for the game and encoder; the dashboard explains when preview is paused.

@@ -3,6 +3,8 @@
 #include <fstream>
 #include <cstdarg>
 #include <cstdio>
+#include <limits>
+#include <utility>
 #include <dxgi1_6.h>
 extern "C" {
 #include <libavutil/error.h>
@@ -118,7 +120,7 @@ static std::vector<Packet> receive(AVCodecContext* c, int stream) {
     return out;
 }
 static void configureVideo(AVCodecContext* c, const std::string& name, const Config& cfg,
-                           Size output, AVPixelFormat format) {
+                           Size output, AVPixelFormat format, bool amfUltraFeatures = true) {
     c->width = output.w;
     c->height = output.h;
     c->pix_fmt = format;
@@ -126,9 +128,16 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     c->framerate = {cfg.fps, 1};
     c->gop_size = cfg.fps * 2;
     c->max_b_frames = 0;
+    const int rateControl = std::clamp(cfg.rateControl, 0, 2);
     c->bit_rate = cfg.bitrateKbps ? cfg.bitrateKbps * 1000
                                   : bitrate(output, cfg.fps, cfg.quality,
                                             name.find("264") == std::string::npos);
+    // VBR uses the requested bitrate as its target and a 1.5x peak. CBR is
+    // constrained to its target. CQP intentionally ignores bitrate limits.
+    c->rc_max_rate = rateControl == 0 ? c->bit_rate * 3 / 2
+                    : rateControl == 2 ? c->bit_rate : 0;
+    c->rc_buffer_size = rateControl == 1 ? 0 : int(std::min<int64_t>(
+        int64_t(c->rc_max_rate) * 2, std::numeric_limits<int>::max()));
     c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     c->color_range = AVCOL_RANGE_MPEG;
     c->colorspace = AVCOL_SPC_BT709;
@@ -137,29 +146,60 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     if (name == "libx264") {
         av_opt_set(c->priv_data, "preset", "ultrafast", 0);
         av_opt_set(c->priv_data, "tune", "zerolatency", 0);
-        if (!cfg.bitrateKbps) {
+        if (rateControl == 1) {
+            constexpr int qp[] = {36, 32, 27, 23, 19};
+            av_opt_set_int(c->priv_data, "qp", qp[std::clamp(cfg.quality, 0, 4)], 0);
+        } else if (rateControl == 0 && !cfg.bitrateKbps) {
             constexpr int crf[] = {32, 28, 23, 20, 17};
             av_opt_set_int(c->priv_data, "crf", crf[cfg.quality], 0);
         }
+        if (rateControl == 2)
+            av_opt_set(c->priv_data, "nal-hrd", "cbr", 0);
         c->thread_count = std::clamp(int(std::thread::hardware_concurrency() / 2), 1, 8);
     }
     if (name.find("nvenc") != std::string::npos) {
         av_opt_set(c->priv_data, "preset", cfg.quality >= 2 ? "p5" : "p3", 0);
         av_opt_set(c->priv_data, "tune", cfg.quality >= 2 ? "hq" : "ull", 0);
         av_opt_set_int(c->priv_data, "rc-lookahead", 0, 0);
+        const char* rc = rateControl == 1 ? "constqp" : rateControl == 2 ? "cbr" : "vbr";
+        av_opt_set(c->priv_data, "rc", rc, 0);
+        if (rateControl == 1) {
+            constexpr int qp[] = {36, 32, 27, 23, 19};
+            av_opt_set_int(c->priv_data, "qp", qp[std::clamp(cfg.quality, 0, 4)], 0);
+        }
     }
     if (name.find("amf") != std::string::npos) {
         av_opt_set(c->priv_data, "usage", "lowlatency", 0);
-        av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
+        const char* amfQuality = cfg.quality == 0 ? "speed"
+                               : cfg.quality == 1 ? "balanced"
+                                                  : "quality";
+        int qualityResult = av_opt_set(c->priv_data, "quality", amfQuality, 0);
+        if (qualityResult < 0)
+            Log::get().write("AMF quality preset could not be set: " + std::string(amfQuality));
+
+        const char* amfRc = rateControl == 1 ? "cqp"
+                          : rateControl == 2 ? "cbr"
+                                             : "vbr_peak";
+        int rcResult = av_opt_set(c->priv_data, "rc", amfRc, 0);
+        if (rcResult < 0)
+            Log::get().write("AMF rate control could not be set: " + std::string(amfRc));
+
+        const bool ultra = cfg.quality == 4 && amfUltraFeatures;
+        int preanalysisResult = av_opt_set_int(c->priv_data, "preanalysis", ultra ? 1 : 0, 0);
+        int vbaqResult = av_opt_set_int(c->priv_data, "vbaq", ultra ? 1 : 0, 0);
+        if (ultra) {
+            Log::get().write("AMF Ultra option requests: preanalysis=" +
+                             std::string(preanalysisResult >= 0 ? "accepted" : "unavailable") +
+                             " VBAQ=" + (vbaqResult >= 0 ? "accepted" : "unavailable"));
+        }
+        if (rateControl == 1) {
+            constexpr int qp[] = {36, 32, 27, 23, 19};
+            const int selectedQp = qp[std::clamp(cfg.quality, 0, 4)];
+            av_opt_set_int(c->priv_data, "qp_i", selectedQp, 0);
+            av_opt_set_int(c->priv_data, "qp_p", selectedQp, 0);
+        }
         av_opt_set_int(c->priv_data, "frame_skipping", 0, 0);
         av_opt_set_int(c->priv_data, "async_depth", 3, 0);
-        const char* amfQuality = cfg.quality >= 2 ? "quality"
-                               : cfg.quality == 1 ? "balanced"
-                                                  : "speed";
-        av_opt_set(c->priv_data, "quality", amfQuality, 0);
-        av_opt_set(c->priv_data, "rc", "vbr_peak", 0);
-        c->rc_max_rate = std::min<int64_t>(150000000, c->bit_rate * 2);
-        c->rc_buffer_size = int(std::min<int64_t>(300000000, c->bit_rate * 2));
     }
     if (name.find("_mf") != std::string::npos) {
         av_opt_set_int(c->priv_data, "hw_encoding", 1, 0);
@@ -167,6 +207,11 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     }
     if (name.find("qsv") != std::string::npos)
         av_opt_set(c->priv_data, "preset", "veryfast", 0);
+    if (name.find("qsv") != std::string::npos && rateControl == 1) {
+        constexpr int qp[] = {36, 32, 27, 23, 19};
+        c->flags |= AV_CODEC_FLAG_QSCALE;
+        c->global_quality = qp[std::clamp(cfg.quality, 0, 4)] * FF_QP2LAMBDA;
+    }
     if (name == "libvpx-vp9") {
         av_opt_set(c->priv_data, "deadline", "realtime", 0);
         av_opt_set_int(c->priv_data, "cpu-used", 8, 0);
@@ -277,15 +322,22 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
             !synthetic && capture && preferredCaptureDevice(capture) &&
             (name.find("nvenc") != std::string::npos || name.find("amf") != std::string::npos ||
              name.find("_mf") != std::string::npos);
-        std::vector<int> attempts;
+        const bool canRetryWithoutUltra = name.find("amf") != std::string::npos && cfg.quality == 4;
+        std::vector<std::pair<int, bool>> attempts;
+        auto addAttempt = [&](int index) {
+            attempts.emplace_back(index, true);
+            if (canRetryWithoutUltra)
+                attempts.emplace_back(index, false);
+        };
         if (canGpu)
-            attempts.push_back(-2); // capture device, zero readback
+            addAttempt(-2); // capture device, zero readback
         if (name.find("amf") != std::string::npos) {
             auto amd = amdAdapters();
-            attempts.insert(attempts.end(), amd.begin(), amd.end());
+            for (int index : amd)
+                addAttempt(index);
         }
-        attempts.push_back(-1); // library-selected device / software encoder
-        for (int attempt : attempts) {
+        addAttempt(-1); // library-selected device / software encoder
+        for (auto [attempt, amfUltraFeatures] : attempts) {
             try {
                 codec_ = avcodec_alloc_context3(codec);
                 if (!codec_)
@@ -294,7 +346,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 AVPixelFormat fmt =
                     gpu_ ? AV_PIX_FMT_D3D11
                          : (name.find("lib") == 0 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NV12);
-                configureVideo(codec_, name, cfg, output_, fmt);
+                configureVideo(codec_, name, cfg, output_, fmt, amfUltraFeatures);
                 if (gpu_) {
                     device_ = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
                     if (!device_)
@@ -430,19 +482,26 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     " quality=" + std::to_string(cfg.quality) + " container=" + cfg.format +
                     " GPU_NV12_readback=" + std::to_string(nv12Readback_));
                 const char* preset = name.find("amf") != std::string::npos
-                                         ? cfg.quality >= 2 ? "quality"
-                                           : cfg.quality == 1 ? "balanced" : "speed"
+                                         ? cfg.quality == 0 ? "speed"
+                                           : cfg.quality == 1 ? "balanced" : "quality"
                                      : name.find("nvenc") != std::string::npos
                                          ? cfg.quality >= 2 ? "p5/hq" : "p3/ull"
                                      : name.find("qsv") != std::string::npos ? "veryfast"
                                                                               : "codec-default";
+                const char* rateMode = cfg.rateControl == 1 ? "CQP"
+                                     : cfg.rateControl == 2 ? "CBR"
+                                                            : "VBR peak constrained";
+                const char* bitrateRole = cfg.rateControl == 1 ? "ignored_by_CQP" : "target";
                 Log::get().write("Encoder quality mode=" + std::string(preset) +
-                                 " rate_control=" + (name.find("amf") != std::string::npos
-                                                          ? "vbr_peak"
-                                                          : name.find("nvenc") != std::string::npos
-                                                                ? "vbr"
-                                                                : "codec-default") +
-                                 " max_rate_bps=" + std::to_string(codec_->rc_max_rate) +
+                                 " rate_control=" + rateMode +
+                                 " bitrate_role=" + bitrateRole +
+                                 " target_bps=" + std::to_string(codec_->bit_rate) +
+                                 " peak_bps=" + std::to_string(codec_->rc_max_rate) +
+                                 " ultra_features=" +
+                                 (name.find("amf") != std::string::npos && cfg.quality == 4
+                                      ? (amfUltraFeatures ? "preanalysis_vbaq_attempted" :
+                                                       "disabled_after_fallback")
+                                      : "not_requested") +
                                  " pixel_format=" +
                                  (fmt == AV_PIX_FMT_D3D11 ? "d3d11/nv12"
                                   : fmt == AV_PIX_FMT_NV12 ? "nv12/4:2:0"
@@ -468,6 +527,8 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 enumerator_.Reset();
                 vd_.Reset();
                 vc_.Reset();
+                if (canRetryWithoutUltra && amfUltraFeatures)
+                    Log::get().write("AMF Ultra initialization retry without optional pre-analysis/VBAQ features");
             }
         }
     }

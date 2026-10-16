@@ -243,6 +243,7 @@ void Engine::run(std::stop_token token) {
                     current.height != cfg.height || current.resolutionMode != cfg.resolutionMode ||
                     current.encoder != cfg.encoder || current.format != cfg.format ||
                     current.quality != cfg.quality || current.bitrateKbps != cfg.bitrateKbps ||
+                    current.rateControl != cfg.rateControl ||
                     current.separateTracks != cfg.separateTracks ||
                     current.captureBackend != cfg.captureBackend;
                 if (recording && pipelineChanged) {
@@ -254,6 +255,7 @@ void Engine::run(std::stop_token token) {
                     current.format = cfg.format;
                     current.quality = cfg.quality;
                     current.bitrateKbps = cfg.bitrateKbps;
+                    current.rateControl = cfg.rateControl;
                     current.separateTracks = cfg.separateTracks;
                     current.captureBackend = cfg.captureBackend;
                     notify_("Encoding changes will take effect after recording stops", true);

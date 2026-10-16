@@ -681,8 +681,18 @@ void UI::settings() {
             },
             !locked);
         num(
-            L"bitrate", L"Bitrate · kbps (0 = automatic)", cfg_.bitrateKbps, 0, 150000,
+            L"bitrate", L"Bitrate · kbps", cfg_.bitrateKbps, 0, 150000,
             [this](int n) { cfg_.bitrateKbps = n; }, !locked);
+        const std::vector<std::wstring> rateModes = {
+            L"VBR · peak constrained", L"CQP · constant quality", L"CBR · constant bitrate"};
+        pick(
+            L"ratecontrol", L"Rate control", rateModes[size_t(cfg_.rateControl)], rateModes,
+            cfg_.rateControl,
+            [this](int i) {
+                cfg_.rateControl = i;
+                save();
+            },
+            !locked);
         std::vector<std::wstring> labels = {L"Auto · best compatible encoder"};
         std::vector<std::string> names = {"auto"};
         int selected = 0;

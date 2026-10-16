@@ -11,6 +11,9 @@ void UI::smokeControls() {
         if (!ok)
             throw std::runtime_error(message);
     };
+    const Config defaults;
+    require(defaults.bitrateKbps == 35000 && defaults.rateControl == 0,
+            "Bitrate and rate-control defaults are incorrect");
     auto page = [&](int index) {
         page_ = index;
         scroll_ = 0;
@@ -143,7 +146,15 @@ void UI::smokeControls() {
         choose(L"resolution", 5);
         number(L"width", 1280, &Config::width);
         number(L"height", 720, &Config::height);
+        number(L"bitrate", 0, &Config::bitrateKbps);
+        require(cfg_.bitrateKbps == 0, "Automatic bitrate fallback cannot be selected");
         number(L"bitrate", 8000, &Config::bitrateKbps);
+        choose(L"ratecontrol", 1);
+        require(cfg_.rateControl == 1, "Rate control dropdown did not commit CQP");
+        choose(L"ratecontrol", 2);
+        require(cfg_.rateControl == 2, "Rate control dropdown did not commit CBR");
+        choose(L"ratecontrol", 0);
+        require(cfg_.rateControl == 0, "Rate control dropdown did not restore VBR");
         toggle(L"remux", &Config::remux);
         choose(L"format", 3);
         require(cfg_.format == "webm", "Container dropdown did not commit");

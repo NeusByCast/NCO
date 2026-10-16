@@ -73,3 +73,10 @@ Core regression coverage additionally verifies that delayed video is inserted in
 - Dashboard preview and overlay animation share the UI paint cadence; a toast alone no longer causes repeated full-window repainting. Dashboard redraw cadence is 30 FPS.
 - Frame-rate settings now offer only 15, 30 and 60 FPS. Existing unsupported saved values migrate to 60 FPS.
 - The newly attached log pointer was not available to the file reader in this turn. The accessible diagnostic remains the older 0.2 log; the new export is needed to validate current resolution, bitrate, adapter, and dropped-frame causes.
+
+## Encoding controls update
+
+- New default bitrate is 35,000 kbps; the numeric field still accepts zero to retain the automatic fallback.
+- Rate control offers VBR peak constrained, CQP, and CBR. VBR uses the entered bitrate as target and a 1.5x peak; CBR is capped at target; CQP uses preset-based quantizers and ignores the bitrate target.
+- Automated Windows UI tests verify the bitrate and rate-control defaults, zero/explicit bitrate entry, and dropdown selection. Synthetic media tests cover all three modes across 15/30/60 FPS and five quality presets.
+- AMF Ultra requests its Quality preset plus pre-analysis and VBAQ. If those optional features prevent encoder startup, initialization retries without them. AMF hardware support and visual output still require testing on an AMD PC.

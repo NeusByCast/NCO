@@ -35,7 +35,8 @@ Config Config::load() {
     c.width = num("width", 1920, 64, 7680);
     c.height = num("height", 1080, 64, 4320);
     c.quality = num("quality", 2, 0, 4);
-    c.bitrateKbps = num("bitrate", 0, 0, 150000);
+    c.bitrateKbps = num("bitrate", 35000, 0, 150000);
+    c.rateControl = num("rateControl", 0, 0, 2);
     c.replaySeconds = num("replaySeconds", 30, 15, 60);
     if (c.replaySeconds != 15 && c.replaySeconds != 30 && c.replaySeconds != 60)
         c.replaySeconds = 30;
@@ -87,6 +88,7 @@ void Config::save() const {
     WRITE(height);
     WRITE(quality);
     f << "bitrate=" << bitrateKbps << "\n";
+    WRITE(rateControl);
     WRITE(replaySeconds);
     WRITE(encoder);
     WRITE(format);

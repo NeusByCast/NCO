@@ -61,6 +61,7 @@ std::vector<float> tone(int64_t sample, int count) {
 
 void containerTest(const std::filesystem::path& dir, const std::string& format) {
     Config config;
+    config.bitrateKbps = 0;
     config.fps = 30;
     config.resolutionMode = 5;
     config.width = 320;
@@ -181,6 +182,7 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
 
 void separateTrackRemux(const std::filesystem::path& dir) {
     Config config;
+    config.bitrateKbps = 0;
     config.fps = 30;
     config.encoder = "libx264";
     VideoEncoder video;
@@ -230,36 +232,42 @@ void separateTrackRemux(const std::filesystem::path& dir) {
 void videoMatrix(const std::filesystem::path& dir) {
     for (int fps : {15, 30, 60}) {
         for (int quality = 0; quality < 5; ++quality) {
-            Config config;
-            config.fps = fps;
-            config.quality = quality;
-            config.encoder = "libx264";
-            config.format = "mkv";
-            // Exercise native size and custom scaling, including even-dimension rounding.
-            config.resolutionMode = quality % 2 ? 5 : 0;
-            config.width = 641;
-            config.height = 361;
-            VideoEncoder encoder;
-            encoder.open(config, nullptr, {320, 180}, true);
-            Muxer mux;
-            auto path =
-                dir / ("matrix-" + std::to_string(fps) + "-" + std::to_string(quality) + ".mkv");
-            mux.open(path, {encoder.track()});
-            for (int frame = 0; frame < fps; ++frame)
-                for (auto& p : encoder.synthetic(frame, frame == 0))
+            for (int rateControl = 0; rateControl < 3; ++rateControl) {
+                Config config;
+                config.bitrateKbps = 0;
+                config.rateControl = rateControl;
+                config.fps = fps;
+                config.quality = quality;
+                config.encoder = "libx264";
+                config.format = "mkv";
+                // Exercise native size and custom scaling, including even-dimension rounding.
+                config.resolutionMode = quality % 2 ? 5 : 0;
+                config.width = 641;
+                config.height = 361;
+                VideoEncoder encoder;
+                encoder.open(config, nullptr, {320, 180}, true);
+                Muxer mux;
+                auto path = dir / ("matrix-" + std::to_string(fps) + "-" +
+                                   std::to_string(quality) + "-" +
+                                   std::to_string(rateControl) + ".mkv");
+                mux.open(path, {encoder.track()});
+                for (int frame = 0; frame < fps; ++frame)
+                    for (auto& p : encoder.synthetic(frame, frame == 0))
+                        mux.write(p);
+                for (auto& p : encoder.flush())
                     mux.write(p);
-            for (auto& p : encoder.flush())
-                mux.write(p);
-            mux.close();
-            auto result = inspect(path);
-            require(result[0].packets == size_t(fps), "FPS/quality matrix lost a video frame");
-            require(result[0].end - result[0].first > 850000, "FPS matrix duration incorrect");
+                mux.close();
+                auto result = inspect(path);
+                require(result[0].packets == size_t(fps), "FPS/quality matrix lost a video frame");
+                require(result[0].end - result[0].first > 850000, "FPS matrix duration incorrect");
+            }
         }
     }
 }
 
 void replayDurations(const std::filesystem::path& dir) {
     Config config;
+    config.bitrateKbps = 0;
     config.fps = 15;
     config.encoder = "libx264";
     config.format = "mkv";
@@ -317,6 +325,7 @@ int mediaSelfTest() {
         platformSelfTest(report);
         {
             Config config;
+            config.bitrateKbps = 0;
             config.encoder = "libx264";
             config.fps = 30;
             VideoPipeline pipeline(config, nullptr, {320, 180}, true, 250);
@@ -341,7 +350,7 @@ int mediaSelfTest() {
             report.flush();
         }
         videoMatrix(dir);
-        report << "PASS 15/30/60 FPS, five quality levels, native/custom scaling\n";
+        report << "PASS 15/30/60 FPS, five quality levels, all three rate controls, native/custom scaling\n";
         replayDurations(dir);
         report << "PASS 15/30/60-second replay rings with accelerated synthetic A/V\n";
         report << "PASS automatic/manual background remux preserves codecs, packets and original; overwrite rejected\n";
