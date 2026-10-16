@@ -175,6 +175,10 @@ void Engine::run(std::stop_token token) {
                          " auto_remux=" + std::to_string(cfg.remux) +
                          " capture=" + std::to_string(capture->size().w) + "x" +
                          std::to_string(capture->size().h));
+        if (cfg.remux && cfg.format == "mkv")
+            Log::get().write("Auto-remux not needed: selected target is already MKV");
+        else if (cfg.remux)
+            Log::get().write("Auto-remux enabled: will verify the recording, then remux without re-encoding");
     };
     packets = [&](std::vector<Packet> ps) {
         for (auto& p : ps) {
@@ -389,7 +393,7 @@ void Engine::run(std::stop_token token) {
                         ++local.dropped;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }
-                if (cfg.preview && visible_ && texture && now - lastPreview >= (video ? (local.encodeMs > 800.0 / cfg.fps || (local.actualFps > 0 && local.actualFps < cfg.fps * .9) ? 100000 : 33333) : 16667)) {
+                if (cfg.preview && !recording && visible_ && texture && now - lastPreview >= (video ? (local.encodeMs > 800.0 / cfg.fps || (local.actualFps > 0 && local.actualFps < cfg.fps * .9) ? 100000 : 33333) : 16667)) {
                     try {
                         auto p = capture->thumbnail(texture.Get());
                         if (!p.second.empty()) {

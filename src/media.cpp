@@ -958,6 +958,13 @@ void DiskWriter::run() {
         mux->close();
         mux.reset();
         notify_("Recording stopped", false);
+        if (remux)
+            Log::get().write("Auto-remux queued after recording close; target=" +
+                             utf8(final.filename().wstring()) + " recovery=" +
+                             utf8(temporary.filename().wstring()));
+        else
+            Log::get().write("Recording container finalized: " +
+                             utf8(final.filename().wstring()));
         Job job{remux ? Job::Remux : Job::Verify};
         job.path = final;
         job.source = temporary;
@@ -1032,11 +1039,18 @@ void DiskWriter::exportRun() {
                     throw std::runtime_error("Replay verification failed");
                 notify_("Replay saved", false);
             } else if (job.type == Job::Remux) {
+                if (!job.keepSource)
+                    Log::get().write("Auto-remux started: " + utf8(job.source.filename().wstring()) +
+                                     " -> " + utf8(job.path.filename().wstring()));
                 remuxFile(job.source, job.path);
                 if (!job.keepSource)
                     std::filesystem::remove(job.source);
                 else
                     notify_("Remux complete; original retained", false);
+                if (!job.keepSource) {
+                    Log::get().write("Auto-remux complete and verified; recovery file removed");
+                    notify_("Remux complete", false);
+                }
             } else if (job.type == Job::Verify && !verifyFile(job.path)) {
                 throw std::runtime_error("Recording failed packet verification; file retained");
             }

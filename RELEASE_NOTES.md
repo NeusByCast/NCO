@@ -8,6 +8,9 @@
 - Higher motion-oriented automatic bitrate defaults; AMD peak-constrained VBR with burst headroom and Balanced quality for High/Very High/Ultra. Manual bitrate remains supported.
 - Notifications render one premultiplied bitmap and animate its DWM position/alpha. No repeated font creation, window-region replacement, or paint-based redraw; placement stays fixed to the monitor chosen at notification start.
 - Diagnostics include encoder queue depth and readback rejection in drop counts.
+- Recording pauses live-preview scaling/readback to leave more GPU bandwidth for the game and encoder; the dashboard explains when preview is paused.
+- The custom title bar no longer requests a native caption, preventing duplicate Windows minimize/maximize/close glyphs while retaining native resizing.
+- Automatic remux now logs whether it is skipped because MKV is already selected, queued, started, completed, or failed. Successful remux completion is reported; the settings hint explains the MKV behavior.
 
 Automated Windows tests exercise region input messages, region replacement, popup release/clip handling, cached notification rendering at four requested DPI values, and a deliberately slow software encoder worker. These are not physical-GPU benchmarks or proof of smoothness on the user's laptop. Real-game FPS, GPU readback, live capture/audio synchronization, physical DPI layouts, and notification capture exclusion still require hardware testing.
 

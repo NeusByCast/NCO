@@ -77,7 +77,12 @@ int UI::run(int show) {
     c.lpfnWndProc = toastProc;
     RegisterClassExW(&c);
     hwnd_ =
-        CreateWindowExW(0, L"NCOWindow", L"NCO", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        // NCO paints its own title bar and controls. Keep the resizable frame
+        // and system menu for native sizing/snap behavior, but omit WS_CAPTION
+        // so Windows does not paint a second set of caption buttons over ours.
+        CreateWindowExW(0, L"NCOWindow", L"NCO",
+                        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX |
+                            WS_SYSMENU | WS_CLIPCHILDREN,
                         CW_USEDEFAULT, CW_USEDEFAULT, 1120, 760, nullptr, nullptr, instance_, this);
     if (!hwnd_)
         throw std::runtime_error("Cannot create NCO window");
@@ -531,7 +536,9 @@ void UI::dashboard() {
         std::min(cfg_.compact ? 150.f : std::clamp(width * 9 / 16, 180.f, 320.f), maximumPreview);
     D2D1_RECT_F pr{left, y, right, y + ph};
     round(pr, D2D1::ColorF(0x100d0b), 12);
-    if (cfg_.preview && bitmap_) {
+    // Preview readback performs an extra GPU scale + staging copy. Stop that
+    // work during a recording so the game and encoder get the GPU budget.
+    if (cfg_.preview && bitmap_ && !stats_.recording) {
         auto s = bitmap_->GetSize();
         float scale = std::min((width - 12) / s.width, (ph - 12) / s.height), dw = s.width * scale,
               dh = s.height * scale;
@@ -540,7 +547,8 @@ void UI::dashboard() {
                              y + (ph + dh) / 2},
                             1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     } else {
-        text(cfg_.preview ? L"Waiting for capture…" : L"Preview paused",
+        text(stats_.recording ? L"Preview paused while recording to reduce GPU load"
+                              : cfg_.preview ? L"Waiting for capture…" : L"Preview paused",
              {left + 24, y + ph / 2 - 20, right - 24, y + ph / 2 + 20}, 16, muted);
     }
     if (ph >= 100) {
@@ -708,7 +716,8 @@ void UI::settings() {
         directory(false);
         tog(
             L"remux", L"Automatically remux recordings", cfg_.remux,
-            [this] { cfg_.remux = !cfg_.remux; }, !locked);
+            [this] { cfg_.remux = !cfg_.remux; }, !locked,
+            L"MKV recordings are already in the safe target; other formats remux after recording.");
         tog(
             L"replayenabled", L"Enable replay buffer", cfg_.replay,
             [this] { cfg_.replay = !cfg_.replay; }, true);

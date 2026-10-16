@@ -70,6 +70,10 @@ void UI::smokeControls() {
                 "Numeric edit did not commit and persist");
     };
     try {
+        const LONG_PTR windowStyle = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+        require((windowStyle & WS_CAPTION) == 0 && (windowStyle & WS_THICKFRAME) != 0,
+                "Custom title bar must omit the native caption while retaining resizing");
+        report << "PASS custom title bar has no duplicate native caption buttons and keeps resize frame\n";
         {
             std::vector<Source> list(1);
             list[0].monitor = reinterpret_cast<HMONITOR>(uintptr_t(1));
