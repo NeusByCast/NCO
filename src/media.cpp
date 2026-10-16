@@ -184,6 +184,11 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         if (rcResult < 0)
             Log::get().write("AMF rate control could not be set: " + std::string(amfRc));
 
+        // AMF can emit a non-IDR I picture for a generic AV_PICTURE_TYPE_I
+        // request. Recordings and replay segments must start on a decodable
+        // boundary, so explicitly ask AMF to turn forced I pictures into IDRs.
+        av_opt_set_int(c->priv_data, "forced_idr", 1, 0);
+
         const bool ultra = cfg.quality == 4 && amfUltraFeatures;
         int preanalysisResult = av_opt_set_int(c->priv_data, "preanalysis", ultra ? 1 : 0, 0);
         int vbaqResult = av_opt_set_int(c->priv_data, "vbaq", ultra ? 1 : 0, 0);
@@ -643,6 +648,9 @@ bool VideoEncoder::drainReadback(bool wait, std::vector<Packet>& output) {
     frame_->pts = job.pts;
     frame_->duration = 1;
     frame_->pict_type = job.key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    frame_->flags &= ~AV_FRAME_FLAG_KEY;
+    if (job.key)
+        frame_->flags |= AV_FRAME_FLAG_KEY;
     job.pending = false;
     const auto submit = clockUs();
     auto packets = send(frame_);
@@ -689,6 +697,9 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
     frame_->pts = pts;
     frame_->duration = 1;
     frame_->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    frame_->flags &= ~AV_FRAME_FLAG_KEY;
+    if (key)
+        frame_->flags |= AV_FRAME_FLAG_KEY;
     const auto submit = clockUs();
     auto packets = send(frame_);
     ++submittedFrames;
@@ -710,6 +721,9 @@ std::vector<Packet> VideoEncoder::synthetic(int64_t pts, bool key) {
     frame_->pts = pts;
     frame_->duration = 1;
     frame_->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    frame_->flags &= ~AV_FRAME_FLAG_KEY;
+    if (key)
+        frame_->flags |= AV_FRAME_FLAG_KEY;
     auto output = send(frame_);
     ++submittedFrames;
     return output;

@@ -22,9 +22,11 @@ Engine::~Engine() {
 void Engine::stop() {
     std::lock_guard stopLock(stopMutex_);
     if (thread_.joinable()) {
+        Log::get().write("Shutdown requested; waiting for recording pipeline finalization");
         thread_.request_stop();
         SetEvent(wake_);
         thread_.join();
+        Log::get().write("Recording pipeline thread stopped");
     }
 }
 void Engine::configure(const Config& cfg, const Source& s) {
@@ -104,12 +106,14 @@ void Engine::run(std::stop_token token) {
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
     bool suspended = false, stoppingRecording = false;
     int64_t stopCutoff = 0, stopRequested = 0, latestVideoUs = -1;
+    int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0;
     EngineStats local;
     Com<ID3D11Texture2D> texture;
     std::vector<Packet> recordingPreroll;
     std::function<void(std::vector<Packet>)> packets;
     auto endPipeline = [&] {
         if (video) {
+            Log::get().write("Finalizing video encoder and draining queued frames");
             packets(video->flush());
             for (auto& a : audio) packets(a->flush());
             auto finalMetrics = video->metrics();
@@ -192,13 +196,21 @@ void Engine::run(std::stop_token token) {
                 if (gate) {
                     if (!p.key()) {
                         if (p.stream != 0) {
-                            // Keep audio while an asynchronous first/resume keyframe is pending.
-                            if (recordingPreroll.size() >= 256)
-                                throw std::runtime_error("Timed out waiting for a recording keyframe");
+                            // Keep bounded audio while an asynchronous first/resume IDR is
+                            // pending. The old hard packet limit threw out of the whole
+                            // capture loop after about five seconds on some AMF drivers.
+                            while (!recordingPreroll.empty() &&
+                                   p.us() - recordingPreroll.front().us() > 3000000)
+                                recordingPreroll.erase(recordingPreroll.begin());
+                            if (recordingPreroll.size() >= 192)
+                                recordingPreroll.erase(recordingPreroll.begin());
                             recordingPreroll.push_back(p);
                         }
                         continue;
                     }
+                    Log::get().write("Recording keyframe acquired after_ms=" +
+                                     std::to_string((clockUs() - keyframeWaitStart) / 1000) +
+                                     " encoder=" + local.encoder);
                     gate = false;
                     disk.write(p, removed);
                     for (auto& audioPacket : recordingPreroll)
@@ -313,6 +325,7 @@ void Engine::run(std::stop_token token) {
                         gate = true;
                         recordingPreroll.clear();
                         forceKey = true;
+                        keyframeWaitStart = lastKeyframeRequest = clockUs();
                         removed = 0;
                         recordStart = clockUs();
                     }
@@ -325,6 +338,7 @@ void Engine::run(std::stop_token token) {
                         gate = true;
                         recordingPreroll.clear();
                         forceKey = true;
+                        keyframeWaitStart = lastKeyframeRequest = clockUs();
                     }
                 } else if (action == AudioRefresh && video) {
                     mic.start(true, cfg.micDevice,
@@ -357,10 +371,31 @@ void Engine::run(std::stop_token token) {
                 recording = false;
                 paused = false;
                 disk.close();
+                Log::get().write("Recording stopped after disk writer failure");
                 if (!replay)
                     endPipeline();
             }
             int64_t now = clockUs();
+            if (recording && !paused && gate && now - lastKeyframeRequest >= 500000) {
+                // Some hardware encoders can miss a forced-frame request while
+                // their asynchronous queue is starting. Retry at a low rate.
+                forceKey = true;
+                lastKeyframeRequest = now;
+            }
+            if (recording && !paused && gate && keyframeWaitStart &&
+                now - keyframeWaitStart >= 10000000) {
+                Log::get().write("Recording aborted: encoder produced no decodable keyframe after repeated IDR requests");
+                recording = paused = gate = false;
+                stoppingRecording = false;
+                recordingPreroll.clear();
+                disk.close();
+                Log::get().write("Recording output closed after keyframe wait failure");
+                if (!replay)
+                    endPipeline();
+                local.recording = local.paused = local.finishing = false;
+                local.durationUs = 0;
+                notify_("Recording failed: encoder did not produce a keyframe. The capture pipeline remains available.", true);
+            }
             const bool wasVisible = visible_.load();
             const bool previewVisible = cfg.preview && wasVisible;
             if (!video && !previewVisible && capture) {

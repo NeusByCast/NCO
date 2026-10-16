@@ -78,8 +78,14 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
     mux.open(path, tracks);
     std::vector<Packet> packets;
     ReplayRing<Packet> ring;
+    bool sawFirstVideoPacket = false;
+    bool firstVideoPacketWasKey = false;
     auto accept = [&](std::vector<Packet> input) {
         for (auto& packet : input) {
+            if (packet.stream == 0 && !sawFirstVideoPacket) {
+                sawFirstVideoPacket = true;
+                firstVideoPacketWasKey = packet.key();
+            }
             mux.write(packet);
             ring.push(packet);
             packets.push_back(packet);
@@ -96,6 +102,8 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
     accept(video.flush());
     accept(audio.flush());
     mux.close();
+    require(sawFirstVideoPacket && firstVideoPacketWasKey,
+            "Encoder did not mark its forced first frame as a keyframe");
     auto streams = inspect(path);
     require(streams.size() == 2 && streams[0].packets == 90,
             "Video/audio stream count or video frame count mismatch");
