@@ -131,16 +131,30 @@ int UI::run(int show) {
     SetTimer(hwnd_, 1, 1000, nullptr);
     if (smoke_)
         SetTimer(hwnd_, 3, 1200, nullptr);
+    updateDisplayTiming();
     updatePreviewTimer();
     MSG msg{};
     bool running = true;
     while (running) {
-        HANDLE timer = previewTimer_.get();
-        DWORD ready = MsgWaitForMultipleObjectsEx(timer ? 1 : 0, timer ? &timer : nullptr,
-                                                  INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (timer && ready == WAIT_OBJECT_0 && page_ == 0 && !IsIconic(hwnd_) &&
-            (animationActiveAt(clockUs()) || (engine_ && engine_->previewChanged(bitmapSerial_))))
-            invalidate();
+        updatePreviewTimer();
+        HANDLE events[2]{};
+        DWORD count = 0, frameIndex = MAXDWORD, previewIndex = MAXDWORD;
+        if (frameTimerArmed_ && previewTimer_.get()) {
+            frameIndex = count;
+            events[count++] = previewTimer_.get();
+        }
+        if (previewTimerActive_ && engine_) {
+            previewIndex = count;
+            events[count++] = engine_->previewReadyEvent();
+        }
+        const DWORD ready = MsgWaitForMultipleObjectsEx(count, events, INFINITE,
+                                                        QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (frameIndex != MAXDWORD && ready == WAIT_OBJECT_0 + frameIndex) {
+            frameTimerArmed_ = false;
+            advanceUiFrame();
+        }
+        if (previewIndex != MAXDWORD && ready == WAIT_OBJECT_0 + previewIndex &&
+            engine_->previewChanged(bitmapSerial_)) invalidate();
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 running = false;
@@ -154,21 +168,87 @@ int UI::run(int show) {
         probe_.join();
     return smoke_ && renderFailed_ ? 1 : int(msg.wParam);
 }
+bool UI::animationsEnabled() const {
+    return cfg_.animations && hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) &&
+           !stats_.recording && !closing_;
+}
+void UI::updateDisplayTiming() {
+    MONITORINFOEXW monitor{};
+    monitor.cbSize = sizeof(monitor);
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    int refresh = 60;
+    if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor) &&
+        EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1)
+        refresh = std::clamp(int(mode.dmDisplayFrequency), 60, 240);
+    frameIntervalUs_ = (1000000 + refresh - 1) / refresh;
+}
+void UI::requestAnimation() { updatePreviewTimer(); }
 void UI::updatePreviewTimer() {
-    // Recording pauses the live preview, so the dashboard needs only its
-    // one-second status refresh. Avoid repainting the whole Direct2D page at
-    // 30 FPS while there is no preview bitmap to display.
-    const bool active = page_ == 0 && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) &&
-                        !closing_ && !stats_.recording;
+    const bool active = hwnd_ && page_ == 0 && cfg_.preview && IsWindowVisible(hwnd_) &&
+                        !IsIconic(hwnd_) && !closing_ && !stats_.recording;
     if (active != previewTimerActive_) {
         previewTimerActive_ = active;
-        if (engine_)
-            engine_->visible(active);
-        if (active)
-            previewTimer_.arm(33333, 33);
-        else
-            previewTimer_.cancel();
+        if (engine_) engine_->visible(active);
     }
+    if (!active) {
+        bitmap_.Reset();
+        displayedPreview_ = {};
+        bitmapSerial_ = 0;
+    }
+    const bool animated = animationsEnabled();
+    if (animated != animationsAllowed_) {
+        animationsAllowed_ = animated;
+        for (auto& [id, tween] : tweens_) {
+            tween.from = tween.to;
+            tween.start = 0;
+        }
+        navigationStart_ = hoverStart_ = 0;
+        if (popup_.closing) popup_.open = popup_.closing = false;
+        popup_.start = 0;
+        KillTimer(hwnd_, 2);
+        if (toastVisible_ && !animated) {
+            toastSurface_.frame(toast_, toastPosition_.x, toastPosition_.y, 255);
+            ShowWindow(toast_, SW_SHOWNOACTIVATE);
+            SetTimer(hwnd_, 2, UINT(std::max<int64_t>(1, (toastStart_ + 1000000 - clockUs()) / 1000)), nullptr);
+        }
+    }
+    const bool ticking = (animated && (animationActiveAt(clockUs()) || toastVisible_)) ||
+                         (inSizeMove_ && active);
+    // Native move/resize loops dispatch window timers, not our message wait.
+    const bool messages = ticking && (inSizeMove_ || !previewTimer_.get());
+    if (messages != messageTimerActive_) {
+        messageTimerActive_ = messages;
+        if (messages) SetTimer(hwnd_, 4, 16, nullptr);
+        else KillTimer(hwnd_, 4);
+    }
+    if ((!ticking || messages) && frameTimerArmed_) {
+        previewTimer_.cancel();
+        frameTimerArmed_ = false;
+    } else if (ticking && !messages && !frameTimerArmed_) {
+        previewTimer_.arm(std::max<int64_t>(1, lastUiFrame_ + frameIntervalUs_ - clockUs()));
+        frameTimerArmed_ = true;
+    }
+}
+void UI::advanceUiFrame() {
+    const auto now = clockUs();
+    lastUiFrame_ = now;
+    if (toastVisible_ && toast_) {
+        const float elapsed = float(now - toastStart_) / 1000;
+        if (elapsed >= 1000) {
+            ShowWindow(toast_, SW_HIDE);
+            toastVisible_ = false;
+            KillTimer(hwnd_, 2);
+        } else if (animationsEnabled()) {
+            const float fraction = elapsed < 150 ? ease(elapsed / 150)
+                : elapsed > 850 ? 1 - ease((elapsed - 850) / 150) : 1;
+            toastSurface_.frame(toast_, toastPosition_.x + int(12 * (1 - fraction) * toastDpi_ / 96),
+                                toastPosition_.y, BYTE(255 * fraction));
+            if (!IsWindowVisible(toast_)) ShowWindow(toast_, SW_SHOWNOACTIVATE);
+        }
+    }
+    if (animationFrameNeedsPaint(now) ||
+        (previewTimerActive_ && engine_ && engine_->previewChanged(bitmapSerial_))) invalidate();
 }
 void UI::resources() {
     if (!factory_)
@@ -191,7 +271,6 @@ void UI::resources() {
               "UI render target");
         check(target_->CreateSolidColorBrush(ink, &brush_), "UI brush");
         bitmap_.Reset();
-        bitmapSerial_ = 0;
     }
 }
 void UI::text(const std::wstring& s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool bold, bool center) {
@@ -302,10 +381,10 @@ D2D1_COLOR_F UI::hoverColor(const std::wstring& id, D2D1_COLOR_F base) {
         tween.from += (tween.to - tween.from) * previous;
         tween.to = float(hover);
         tween.start = clockUs();
-        if (cfg_.animations)
-            SetTimer(hwnd_, 2, 33, nullptr);
+        if (animationsEnabled())
+            requestAnimation();
     }
-    const float fraction = cfg_.animations ? ease(float(clockUs() - tween.start) / 150000) : 1;
+    const float fraction = animationsEnabled() ? ease(float(clockUs() - tween.start) / 150000) : 1;
     const float t = tween.from + (tween.to - tween.from) * fraction;
     return blend(base, ink, .08f * t);
 }
@@ -352,10 +431,10 @@ void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
         t.from = t.from + (t.to - t.from) * p;
         t.to = float(value);
         t.start = clockUs();
-        if (cfg_.animations)
-            SetTimer(hwnd_, 2, 33, nullptr);
+        if (animationsEnabled())
+            requestAnimation();
     }
-    float p = cfg_.animations ? ease(float(clockUs() - t.start) / 150000) : 1;
+    float p = animationsEnabled() ? ease(float(clockUs() - t.start) / 150000) : 1;
     float v = t.from + (t.to - t.from) * p;
     round(r, blend(surface, accent, v), 11);
     brush_->SetColor(blend(muted, bg, v));
@@ -368,7 +447,7 @@ void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selecte
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
     popup_.owner = pressed_;
     popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - popup_.visible));
-    SetTimer(hwnd_, 2, 33, nullptr);
+    requestAnimation();
     invalidate();
 }
 void UI::edit(std::wstring value, D2D1_RECT_F r, std::function<void(std::wstring)> accept,
@@ -932,7 +1011,7 @@ void UI::popup() {
     float width = std::min(w_ - 24, std::max(180.f, a.anchor.right - a.anchor.left));
     float x = std::clamp(a.anchor.left, 12.f, w_ - width - 12);
     float y = upward ? a.anchor.top - height - 6 : a.anchor.bottom + 6;
-    float progress = cfg_.animations ? ease(float(clockUs() - a.start) / 150000) : 1;
+    float progress = animationsEnabled() ? ease(float(clockUs() - a.start) / 150000) : 1;
     if (a.closing)
         progress = 1 - ease(float(clockUs() - a.closeStart) / 150000);
     D2D1_RECT_F box{x, upward ? y + height * (1 - progress) : y,
@@ -969,41 +1048,56 @@ void UI::popup() {
 void UI::dismissPopup() {
     if (!popup_.open)
         return;
-    if (!cfg_.animations)
+    if (!animationsEnabled())
         popup_.open = false;
     else {
         popup_.closing = true;
         popup_.closeStart = clockUs();
-        SetTimer(hwnd_, 2, 33, nullptr);
+        requestAnimation();
     }
     invalidate();
 }
 void UI::draw() {
+    if (!hwnd_ || IsIconic(hwnd_)) return;
     resources();
     RECT client;
     GetClientRect(hwnd_, &client);
+    const auto pixels = target_->GetPixelSize();
+    if (pixels.width != UINT32(client.right) || pixels.height != UINT32(client.bottom)) {
+        const auto result = target_->Resize(D2D1::SizeU(client.right, client.bottom));
+        if (result == D2DERR_RECREATE_TARGET) {
+            target_.Reset();
+            brush_.Reset();
+            bitmap_.Reset();
+            invalidate();
+            return;
+        }
+        check(result, "Resize interface");
+    }
     w_ = client.right * 96 / dpi_;
     h_ = client.bottom * 96 / dpi_;
     stats_ = engine_ ? engine_->stats() : EngineStats{};
     updatePreviewTimer();
-    if (engine_ && cfg_.preview && page_ == 0 && !stats_.recording) {
-        auto p = engine_->preview(bitmapSerial_);
-        if (p.serial && p.serial != bitmapSerial_) {
-            if (p.pixels.empty()) bitmap_.Reset();
-            else if (!bitmap_ || int(bitmap_->GetPixelSize().width) != p.size.w ||
-                int(bitmap_->GetPixelSize().height) != p.size.h) {
-                bitmap_.Reset();
-                check(target_->CreateBitmap(D2D1::SizeU(p.size.w, p.size.h), p.pixels.data(),
-                                            UINT32(p.size.w * 4),
-                                            D2D1::BitmapProperties(D2D1::PixelFormat(
-                                                DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)),
-                                            &bitmap_), "Preview bitmap");
-            } else
-                check(bitmap_->CopyFromMemory(nullptr, p.pixels.data(), UINT32(p.size.w * 4)),
-                      "Update preview bitmap");
-            bitmapSerial_ = p.serial;
+    bool changed = false;
+    if (engine_ && previewTimerActive_) {
+        auto preview = engine_->preview(bitmapSerial_);
+        if (preview.serial && preview.serial != bitmapSerial_) {
+            displayedPreview_ = std::move(preview);
+            bitmapSerial_ = displayedPreview_.serial;
+            changed = true;
         }
     }
+    const auto& preview = displayedPreview_;
+    if (preview.pixels.empty()) bitmap_.Reset();
+    else if (!bitmap_ || int(bitmap_->GetPixelSize().width) != preview.size.w ||
+             int(bitmap_->GetPixelSize().height) != preview.size.h) {
+        bitmap_.Reset();
+        check(target_->CreateBitmap(D2D1::SizeU(preview.size.w, preview.size.h), preview.pixels.data(),
+              UINT32(preview.size.w * 4), D2D1::BitmapProperties(D2D1::PixelFormat(
+                  DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)), &bitmap_), "Preview bitmap");
+    } else if (changed)
+        check(bitmap_->CopyFromMemory(nullptr, preview.pixels.data(), UINT32(preview.size.w * 4)),
+              "Update preview bitmap");
     target_->BeginDraw();
     target_->Clear(bg);
     controls_.clear();
@@ -1025,8 +1119,8 @@ void UI::draw() {
                 scroll_ = 0;
                 popup_.open = false;
                 navigationStart_ = clockUs();
-                if (cfg_.animations)
-                    SetTimer(hwnd_, 2, 33, nullptr);
+                if (animationsEnabled())
+                    requestAnimation();
                 invalidate();
             },
             page_ == i, true,
@@ -1045,7 +1139,7 @@ void UI::draw() {
         L"close", L"", {w_ - 50, 8, w_ - 8, 42}, [this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); },
         false, true, L"close");
     text(titles[page_], {206, 62, w_ - 28, 100}, 27, ink, true);
-    float fade = cfg_.animations ? ease(float(clockUs() - navigationStart_) / 150000) : 1;
+    float fade = animationsEnabled() ? ease(float(clockUs() - navigationStart_) / 150000) : 1;
     const bool fading = fade < 1;
     if (fading) target_->PushLayer(D2D1::LayerParameters({180, 136, w_, h_ - 38}, nullptr,
                                              D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
@@ -1208,8 +1302,7 @@ bool UI::animationActiveAt(int64_t now) const {
            now - navigationStart_ <= 180000 || now - hoverStart_ <= 180000;
 }
 bool UI::animationFrameNeedsPaint(int64_t now) const {
-    return animationActiveAt(now) && !previewTimerActive_ && hwnd_ && !IsIconic(hwnd_) &&
-           IsWindowVisible(hwnd_);
+    return animationsEnabled() && animationActiveAt(now);
 }
 void UI::toast(std::wstring msg) {
     if (!exclusion_) {
@@ -1226,7 +1319,12 @@ void UI::toast(std::wstring msg) {
                       monitor.rcWork.top + int(12 * toastDpi_ / 96)};
     toastStart_ = clockUs();
     toastVisible_ = true;
-    SetTimer(hwnd_, 2, 33, nullptr);
+    if (!animationsEnabled()) {
+        toastSurface_.frame(toast_, toastPosition_.x, toastPosition_.y, 255);
+        ShowWindow(toast_, SW_SHOWNOACTIVATE);
+        SetTimer(hwnd_, 2, 1000, nullptr);
+    }
+    requestAnimation();
 }
 LRESULT CALLBACK UI::toastProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_ERASEBKGND) return 1;
@@ -1329,24 +1427,24 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_ENTERSIZEMOVE:
-        // Moving the window does not change its contents. Avoid forcing a full
-        // synchronous Direct2D redraw during every step of the system move loop.
+        inSizeMove_ = true;
+        updatePreviewTimer();
         return 0;
     case WM_EXITSIZEMOVE:
+        inSizeMove_ = false;
+        updateDisplayTiming();
+        updatePreviewTimer();
+        invalidate();
+        return 0;
+    case WM_DISPLAYCHANGE:
+        updateDisplayTiming();
         invalidate();
         return 0;
     case WM_SIZE:
         updatePreviewTimer();
-        if (engine_)
-            engine_->visible(w != SIZE_MINIMIZED && page_ == 0);
-        if (target_ && w != SIZE_MINIMIZED)
-            target_->Resize(D2D1::SizeU(LOWORD(l), HIWORD(l)));
         if (w == SIZE_MINIMIZED) {
             popup_.open = popup_.closing = false;
             KillTimer(h, 1);
-            // A toast must finish its lifetime even when the main window minimizes.
-            if (!toastVisible_)
-                KillTimer(h, 2);
         } else {
             SetTimer(h, 1, 1000, nullptr);
             invalidate();
@@ -1382,7 +1480,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (hover_.empty()) return 0;
         hover_.clear();
         hoverStart_ = clockUs();
-        SetTimer(h, 2, 33, nullptr);
+        requestAnimation();
         invalidate();
         return 0;
     case WM_MOUSEMOVE: {
@@ -1404,8 +1502,8 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (id != hover_) {
             hover_ = id;
             hoverStart_ = clockUs();
-            if (cfg_.animations)
-                SetTimer(h, 2, 33, nullptr);
+            if (animationsEnabled())
+                requestAnimation();
             invalidate();
         }
         return 0;
@@ -1511,29 +1609,9 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             if (!IsIconic(h) && (page_ == 6 || page_ == 0))
                 invalidate();
-        } else if (w == 2) {
-            int64_t now = clockUs();
-            if (toastVisible_ && toast_) {
-                float t = float(now - toastStart_) / 1000;
-                float f = t < 150 ? ease(t / 150) : t > 850 ? 1 - ease((t - 850) / 150) : 1;
-                if (t >= 1000) {
-                    ShowWindow(toast_, SW_HIDE);
-                    toastVisible_ = false;
-                } else {
-                    const int x = toastPosition_.x + int(12 * (1 - f) * toastDpi_ / 96);
-                    const int y = toastPosition_.y;
-                    toastSurface_.frame(toast_, x, y, BYTE(255 * f));
-                    if (!IsWindowVisible(toast_))
-                        ShowWindow(toast_, SW_SHOWNOACTIVATE);
-                }
-            }
-            const bool activeAnimation = animationActiveAt(now);
-            // The dashboard preview timer owns its paint cadence. Do not make a toast
-            // or other animation trigger a second full-window draw on the same UI thread.
-            if (animationFrameNeedsPaint(now))
-                invalidate();
-            if (!toastVisible_ && !activeAnimation)
-                KillTimer(h, 2);
+        } else if (w == 2 || w == 4) {
+            advanceUiFrame();
+            updatePreviewTimer();
         }
         return 0;
     case WM_APP + 1: {

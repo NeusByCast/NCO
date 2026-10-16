@@ -72,6 +72,8 @@ class Capture {
         return fallback_;
     }
     std::vector<uint8_t> download(ID3D11Texture2D* texture);
+    bool thumbnailPending() const { return thumbCount_ != 0; }
+    std::pair<Size, std::vector<uint8_t>> pollThumbnail();
     std::pair<Size, std::vector<uint8_t>> thumbnail(ID3D11Texture2D* texture, bool changed = true);
 };
 } // namespace nco

@@ -25,7 +25,7 @@ class Engine {
     enum Action { Record, Pause, ReplaySave, AudioRefresh };
     std::jthread thread_;
     std::mutex mutex_, stopMutex_;
-    HANDLE wake_ = nullptr;
+    HANDLE wake_ = nullptr, previewReady_ = nullptr;
     Config config_;
     Source source_;
     uint64_t generation_ = 0;
@@ -33,7 +33,7 @@ class Engine {
     std::deque<std::pair<std::filesystem::path, std::filesystem::path>> remuxRequests_;
     EngineStats stats_;
     Preview preview_;
-    std::atomic<bool> visible_ = true;
+    std::atomic<bool> visible_ = false;
     std::function<void(std::string, bool)> notify_;
     std::atomic<bool> diskFailed_ = false;
     void run(std::stop_token token);
@@ -47,10 +47,8 @@ class Engine {
     void replay();
     void refreshAudio();
     void remux(std::filesystem::path source, std::filesystem::path target);
-    void visible(bool value) {
-        visible_ = value;
-        SetEvent(wake_);
-    }
+    void visible(bool value);
+    HANDLE previewReadyEvent() const { return previewReady_; }
     EngineStats stats();
     Preview preview(uint64_t seen = 0);
     bool previewChanged(uint64_t seen);

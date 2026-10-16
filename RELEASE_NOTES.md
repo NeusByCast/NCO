@@ -23,7 +23,7 @@ Replay packets are kept in timestamp order when asynchronous video arrives after
 
 Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, and supports arrow-key selection plus Enter. Windows regression tests select offscreen options through actual wheel messages.
 
-- Dashboard preview redraw is capped at 30 FPS and shares its paint cadence with animations; notification ticks no longer trigger unnecessary full-window redraws; Windows UI tests exercise paint scheduling with and without active preview.
+- Dashboard preview targets 60 FPS and wakes rendering on completed frames, consuming the newest ready thumbnail instead of accumulating a FIFO delay. Animations use a separate on-demand high-resolution clock at the monitor refresh rate (60–240 Hz); static pages do not repaint for notification animation ticks.
 - Recording FPS choices are 15, 30 and 60 only. The custom field and Custom dropdown option are removed; unsupported saved FPS values migrate to 60.
 - Recording files open only after the encoder produces a video keyframe; the dashboard shows Starting until then. GPU conversion/readback work is submitted explicitly.
 - Capture follows the selected frame rate. Muted audio inputs stop their capture workers. Preview reuses processor views and does not overwrite pending readback slots.
@@ -39,3 +39,5 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - AMF can encode textures on an integrated AMD capture GPU even when another AMD GPU ranks faster. This removes the forced GPU-to-RAM-to-GPU route on compatible hybrid systems. Encoder startup still validates support and retains the prior fallbacks. Quality, quantization limits, bitrate, output dimensions and frame-rate settings are unchanged.
 
 - Auto capture evaluates encoder-local WGC at startup when display-adapter encoding falls back to hardware frame upload. The retry keeps the successful codec and all image settings, verifies unchanged source dimensions, and requires direct GPU-texture encoding. Unsupported retries restore the compatible display capture path; explicit capture backends are respected. No runtime performance-monitor process or dependency is added.
+
+- Preview and UI animations stop while minimized or recording. Restoring the dashboard requests a fresh preview even for a static source; render-target recreation can restore the last displayed image. Window resizing coalesces render-target changes into paint events. Recording, encoder quality, audio and file finalization are unchanged by these GUI changes.

@@ -468,6 +468,39 @@ std::vector<uint8_t> Capture::download(ID3D11Texture2D* texture) {
     context_->Unmap(stage_.Get(), 0);
     return out;
 }
+std::pair<Size, std::vector<uint8_t>> Capture::pollThumbnail() {
+    // Consume completed slots and copy only the newest ready image. Preview
+    // latency must not grow into a FIFO backlog when the UI is busy.
+    ID3D11Texture2D* selected = nullptr;
+    D3D11_MAPPED_SUBRESOURCE latest{};
+    std::vector<uint8_t> pixels;
+    try {
+        while (thumbCount_) {
+            auto stage = thumbStages_[thumbRead_].Get();
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            const auto result = context_->Map(stage, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+            if (result == DXGI_ERROR_WAS_STILL_DRAWING) break;
+            check(result, "Preview map");
+            if (selected) context_->Unmap(selected, 0);
+            selected = stage;
+            latest = mapped;
+            thumbRead_ = (thumbRead_ + 1) % thumbStages_.size();
+            --thumbCount_;
+        }
+        if (selected) {
+            pixels.resize(size_t(thumbSize_.w) * thumbSize_.h * 4);
+            for (int y = 0; y < thumbSize_.h; ++y)
+                memcpy(pixels.data() + size_t(y) * thumbSize_.w * 4,
+                       static_cast<uint8_t*>(latest.pData) + size_t(y) * latest.RowPitch,
+                       size_t(thumbSize_.w) * 4);
+            context_->Unmap(selected, 0);
+        }
+    } catch (...) {
+        if (selected) context_->Unmap(selected, 0);
+        throw;
+    }
+    return {thumbSize_, std::move(pixels)};
+}
 std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t, bool changed) {
     thumbDirty_ = thumbDirty_ || changed;
     if (!thumb_ && !thumbDirty_) return {};
@@ -482,7 +515,7 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t, boo
         desc.InputHeight = size_.h;
         desc.OutputWidth = thumbSize_.w;
         desc.OutputHeight = thumbSize_.h;
-        desc.InputFrameRate = desc.OutputFrameRate = {30, 1};
+        desc.InputFrameRate = desc.OutputFrameRate = {60, 1};
         desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         check(thumbDevice_->CreateVideoProcessorEnumerator(&desc, &thumbEnum_), "Preview scaler");
         check(thumbDevice_->CreateVideoProcessor(thumbEnum_.Get(), 0, &thumbProcessor_), "Preview processor");
@@ -507,23 +540,7 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t, boo
         thumbContext_->VideoProcessorSetStreamSourceRect(thumbProcessor_.Get(), 0, TRUE, &src);
         thumbContext_->VideoProcessorSetStreamDestRect(thumbProcessor_.Get(), 0, TRUE, &dst);
     }
-    std::vector<uint8_t> pixels;
-    if (thumbCount_) {
-        auto stage = thumbStages_[thumbRead_].Get();
-        D3D11_MAPPED_SUBRESOURCE m{};
-        const HRESULT mapped = context_->Map(stage, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
-        if (mapped != DXGI_ERROR_WAS_STILL_DRAWING) {
-            check(mapped, "Preview map");
-            try { pixels.resize(size_t(thumbSize_.w) * thumbSize_.h * 4); }
-            catch (...) { context_->Unmap(stage, 0); throw; }
-            for (int y = 0; y < thumbSize_.h; ++y)
-                memcpy(pixels.data() + size_t(y) * thumbSize_.w * 4,
-                       static_cast<uint8_t*>(m.pData) + size_t(y) * m.RowPitch, size_t(thumbSize_.w) * 4);
-            context_->Unmap(stage, 0);
-            thumbRead_ = (thumbRead_ + 1) % thumbStages_.size();
-            --thumbCount_;
-        }
-    }
+    auto ready = pollThumbnail();
     // Never overwrite a staging slot that the GPU is still writing.
     if (thumbDirty_ && thumbCount_ < thumbStages_.size()) {
         if (t != thumbInputTexture_) {
@@ -543,6 +560,6 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t, boo
         ++thumbCount_;
         thumbDirty_ = false;
     }
-    return {thumbSize_, std::move(pixels)};
+    return ready;
 }
 } // namespace nco

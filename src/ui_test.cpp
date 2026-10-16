@@ -213,6 +213,7 @@ void UI::smokeControls() {
         report << "PASS interactive shortcut capture/clear/duplicates and Settings controls, full diagnostic export and move-loop messages\n";
         tweens_.clear();
         popup_.open = popup_.closing = false;
+        cfg_.animations = true;
         const int64_t staticSince = clockUs() - 500000;
         navigationStart_ = hoverStart_ = staticSince;
         previewTimerActive_ = false;
@@ -220,7 +221,7 @@ void UI::smokeControls() {
                 "A static settings page should not repaint for toast ticks");
         previewTimerActive_ = true;
         require(!animationFrameNeedsPaint(clockUs()),
-                "Toast ticks should defer dashboard paints to the preview cadence");
+                "Toast ticks should not repaint a static dashboard");
         previewTimerActive_ = false;
         hoverStart_ = clockUs();
         require(animationFrameNeedsPaint(clockUs()),

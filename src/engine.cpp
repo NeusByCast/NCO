@@ -9,15 +9,22 @@ Engine::Engine(std::function<void(std::string, bool)> notify) : notify_(std::mov
     wake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!wake_)
         throw std::runtime_error("Cannot create recording wake event");
+    previewReady_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!previewReady_) {
+        CloseHandle(wake_);
+        throw std::runtime_error("Cannot create preview-ready event");
+    }
     try {
         thread_ = std::jthread([this](std::stop_token token) { run(token); });
     } catch (...) {
+        CloseHandle(previewReady_);
         CloseHandle(wake_);
         throw;
     }
 }
 Engine::~Engine() {
     stop();
+    CloseHandle(previewReady_);
     CloseHandle(wake_);
 }
 void Engine::stop() {
@@ -76,6 +83,17 @@ EngineStats Engine::stats() {
     std::lock_guard lock(mutex_);
     return stats_;
 }
+void Engine::visible(bool value) {
+    if (visible_.exchange(value) == value) return;
+    if (!value) {
+        std::lock_guard lock(mutex_);
+        preview_.pixels.clear();
+        preview_.size = {};
+        ++preview_.serial;
+        SetEvent(previewReady_);
+    }
+    SetEvent(wake_);
+}
 Preview Engine::preview(uint64_t seen) {
     std::lock_guard lock(mutex_);
     if (seen == preview_.serial) return {};
@@ -114,7 +132,7 @@ void Engine::run(std::stop_token token) {
     double quantizerSum = 0, quantizerMax = -1;
     uint64_t quantizerCount = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
-    bool suspended = false, stoppingRecording = false, drainingVideo = false, previewDirty = true;
+    bool suspended = false, stoppingRecording = false, drainingVideo = false, previewDirty = true, previewWasVisible = false;
     int64_t stopCutoff = 0, stopRequested = 0, drainRequested = 0, latestVideoUs = -1;
     int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0;
     EngineStats local;
@@ -130,6 +148,16 @@ void Engine::run(std::stop_token token) {
     std::vector<Packet> recordingPreroll;
     std::vector<float> micSamples, desktopSamples;
     std::function<void(std::vector<Packet>)> packets;
+    auto publishPreview = [&](std::pair<Size, std::vector<uint8_t>> p) {
+        if (p.second.empty()) return;
+        std::lock_guard lock(mutex_);
+        if (gen == generation_ && visible_.load()) {
+            preview_.pixels = std::move(p.second);
+            preview_.size = p.first;
+            ++preview_.serial;
+            SetEvent(previewReady_);
+        }
+    };
     auto endPipeline = [&](bool finalizeRecording = false) {
         if (video) {
             Log::get().write("Finalizing video encoder and draining queued frames");
@@ -500,6 +528,8 @@ void Engine::run(std::stop_token token) {
             }
             const bool wasVisible = visible_.load();
             const bool previewVisible = cfg.preview && wasVisible;
+            if (previewVisible && !previewWasVisible) previewDirty = true;
+            previewWasVisible = previewVisible;
             if (!video && !previewVisible && capture) {
                 texture.Reset();
                 capture.reset();
@@ -514,7 +544,7 @@ void Engine::run(std::stop_token token) {
                 throw std::runtime_error("The selected window closed. Select another source.");
             const int64_t previewInterval = video &&
                 (local.encodeMs > 800.0 / cfg.fps || (local.actualFps > 0 && local.actualFps < cfg.fps * .9))
-                ? 100000 : 33333;
+                ? 100000 : 16667;
             const bool previewDue = previewVisible && !recording && now - lastPreview >= previewInterval;
             // Audio and packet collection can wake more frequently than the
             // requested video rate. Acquire/copy a source frame only when due.
@@ -542,21 +572,22 @@ void Engine::run(std::stop_token token) {
                 }
                 if (previewDue && texture) {
                     try {
-                        auto p = capture->thumbnail(texture.Get(), std::exchange(previewDirty, false));
-                        if (!p.second.empty()) {
-                        std::lock_guard lock(mutex_);
-                        if (gen == generation_) {
-                            preview_.pixels = std::move(p.second);
-                            preview_.size = p.first;
-                            ++preview_.serial;
-                        }
-                        }
+                        publishPreview(capture->thumbnail(texture.Get(), std::exchange(previewDirty, false)));
                     } catch (const std::exception& e) {
                         cfg.preview = false;
                         Log::get().write(std::string("Preview disabled: ") + e.what());
                         notify_(std::string("Preview disabled: ") + e.what(), true);
                     }
-                    lastPreview = now;
+                }
+                if (previewDue) lastPreview = now;
+            }
+            // Poll preview completion between capture deadlines, without
+            // acquiring extra source frames or touching active encoder work.
+            if (!video && previewVisible && capture && capture->thumbnailPending()) {
+                try { publishPreview(capture->pollThumbnail()); }
+                catch (const std::exception& e) {
+                    cfg.preview = false;
+                    notify_(std::string("Preview disabled: ") + e.what(), true);
                 }
             }
             if (video) {
@@ -709,7 +740,8 @@ void Engine::run(std::stop_token token) {
             int64_t waitUs = drainingVideo ? 10000 :
                 video ? (texture ? std::clamp(nextVideo - clockUs(), int64_t(1000), int64_t(10000))
                                  : 1000000 / cfg.fps)
-                      : 33333;
+                      : !capture ? 16667 : capture->thumbnailPending() ? 2000
+                        : std::max<int64_t>(1000, previewInterval - (clockUs() - lastPreview));
             // High-resolution deadline wait; configuration/actions interrupt it immediately.
             if (!video && !previewVisible)
                 WaitForSingleObject(wake_, INFINITE);

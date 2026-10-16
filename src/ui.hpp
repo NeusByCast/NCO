@@ -33,7 +33,10 @@ class UI {
     ToastSurface toastSurface_;
     POINT toastPosition_{};
     float toastDpi_ = 96;
-    bool previewTimerActive_ = false;
+    bool previewTimerActive_ = false, frameTimerArmed_ = false, messageTimerActive_ = false;
+    bool inSizeMove_ = false, animationsAllowed_ = false;
+    int64_t frameIntervalUs_ = 16667, lastUiFrame_ = 0;
+    Preview displayedPreview_;
     std::unique_ptr<Engine> engine_;
     std::unique_ptr<Hotkeys> hotkeys_;
     Com<ID2D1Factory> factory_;
@@ -72,6 +75,10 @@ class UI {
     EngineStats stats_;
     void draw();
     void updatePreviewTimer();
+    void updateDisplayTiming();
+    void requestAnimation();
+    void advanceUiFrame();
+    bool animationsEnabled() const;
     bool animationActiveAt(int64_t now) const;
     bool animationFrameNeedsPaint(int64_t now) const;
     void resources();
