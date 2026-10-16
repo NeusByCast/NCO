@@ -346,16 +346,6 @@ void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
 void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selected,
                   std::function<void(int)> choose) {
     finishEdit(true);
-    // Make room below the control so the themed menu does not cover earlier
-    // settings rows. The extra scroll range is active only while a menu is open.
-    const float desiredBottom = h_ - 300.f;
-    if (rect.bottom > desiredBottom) {
-        const int shift = int(std::ceil(rect.bottom - desiredBottom));
-        maxScroll_ += 260;
-        scroll_ = std::min(scroll_ + shift, maxScroll_);
-        rect.top -= shift;
-        rect.bottom -= shift;
-    }
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
     popup_.owner = pressed_;
     popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - popup_.visible));
@@ -882,7 +872,7 @@ void UI::settings() {
 
     }
     // Clamp after layout: avoids blank scroll regions after changing a section.
-    maxScroll_ = std::max(0, int(y + scroll_ + 90 - h_)) + (popup_.open ? 260 : 0);
+    maxScroll_ = std::max(0, int(y + scroll_ + 90 - h_));
     if (scroll_ > maxScroll_) {
         scroll_ = maxScroll_;
         invalidate();
@@ -897,8 +887,10 @@ void UI::popup() {
         return;
     }
     const float below = h_ - 44 - a.anchor.bottom;
-    const bool upward = false;
-    const float available = std::max(48.f, below);
+    const float above = a.anchor.top - 124;
+    const float fullHeight = std::min(7, int(a.items.size())) * 36.f + 12;
+    const bool upward = below < fullHeight && above > below;
+    const float available = std::max(48.f, upward ? above : below);
     int visible = std::max(1, std::min({7, int(a.items.size()), int((available - 12) / 36)}));
     a.visible = visible;
     if (!a.positioned) {
@@ -915,7 +907,6 @@ void UI::popup() {
         progress = 1 - ease(float(clockUs() - a.closeStart) / 150000);
     D2D1_RECT_F box{x, upward ? y + height * (1 - progress) : y,
                       x + width, upward ? y + height : y + height * progress};
-    round({x + 2, box.top + 4, x + width + 2, box.bottom + 6}, D2D1::ColorF(0x0b0806), 12);
     round(box, surface, 10);
     target_->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (int j = 0; j < visible; ++j) {

@@ -240,7 +240,10 @@ void UI::smokeControls() {
         report << "PASS native minimize, maximize and restore controls\n";
         cfg_.animations = true;
         pressed_ = L"popupRegression";
+        const int scrollBeforePopup = scroll_;
         dropdown({500, h_ - 110, 850, h_ - 70}, {L"One", L"Two", L"Three"}, 2, [](int) {});
+        require(scroll_ == scrollBeforePopup,
+                "Opening a dropdown unexpectedly scrolled the settings page");
         popup_.start = clockUs() + 1000000;
         controls_.clear();
         target_->BeginDraw();
@@ -258,12 +261,13 @@ void UI::smokeControls() {
         for (const auto& control : controls_)
             if (control.enabled && control.id.rfind(L"option", 0) == 0) {
                 ++visibleOptions;
-                require(control.rect.top >= popup_.anchor.bottom + 5,
-                        "Dropdown option overlapped its field");
+                require(control.rect.bottom <= popup_.anchor.top - 5 ||
+                            control.rect.top >= popup_.anchor.bottom + 5,
+                        "Dropdown options did not stay attached to the field");
             }
         require(visibleOptions == 3, "Completed popup hid selectable rows");
         popup_.open = popup_.closing = false;
-        report << "PASS dropdown opens below its field and clips unrevealed hit targets\n";
+        report << "PASS dropdown stays attached without scrolling the page or exposing hidden hit targets\n";
         report << "UNVERIFIED capture/audio/replay operation, folder dialogs, every hardware encoder, "
                   "notification exclusion, real DPI scaling and animation quality\n";
     } catch (const std::exception& error) {
