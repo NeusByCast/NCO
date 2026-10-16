@@ -21,6 +21,18 @@ struct P {
 };
 int main() {
     using namespace nco;
+    for (int fps : {15, 30, 60, 96, 144, 240}) {
+        constexpr int64_t epoch = 1234567;
+        int64_t previous = epoch - 1;
+        for (int64_t frame = 0; frame < fps * 10; ++frame) {
+            const int64_t deadline = frameDeadlineUs(epoch, frame, fps);
+            CHECK(deadline > previous);
+            CHECK((deadline - epoch) * fps / 1000000 == frame);
+            if (frame)
+                CHECK((deadline - epoch - 1) * fps / 1000000 == frame - 1);
+            previous = deadline;
+        }
+    }
     CHECK(resolution(0, 0, 0, {1921, 1081}).w == 1920);
     CHECK(resolution(5, 1001, 701, {}).h == 700);
     auto wide = letterbox({2560, 1080}, {1920, 1080});

@@ -14,6 +14,11 @@ struct Size {
 struct FitRect {
     int x, y, w, h;
 };
+// Round deadlines up: truncation wakes before the next frame's integer timestamp
+// at rates such as 30/60 FPS, submitting the preceding timestamp twice.
+inline int64_t frameDeadlineUs(int64_t epoch, int64_t index, int fps) {
+    return epoch + (index * 1000000 + fps - 1) / fps;
+}
 inline FitRect letterbox(Size source, Size output) {
     const double scale = std::min(double(output.w) / source.w, double(output.h) / source.h);
     const int w = std::max(2, int(source.w * scale) & ~1);

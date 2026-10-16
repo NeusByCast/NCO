@@ -311,7 +311,7 @@ void Engine::run(std::stop_token token) {
                     forceKey = false;
                     local.encodeMs = local.encodeMs * .9 + double(clockUs() - begin) / 1000 * .1;
                     ++local.frames;
-                    nextVideo = epoch + (frameIndex + 1) * 1000000 / cfg.fps;
+                    nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }
                 if (cfg.preview && visible_ && texture && now - lastPreview >= 125000) {
                     try {

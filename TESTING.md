@@ -4,7 +4,7 @@ This is an engineering preview, not a fully hardware-qualified release. A succes
 
 ## Executed locally
 
-- Linux GCC 13 C++20 core tests, also under AddressSanitizer/UBSan with LeakSanitizer disabled because the container cannot inspect process threads: aspect-preserving letterbox geometry; resolution constraints and even dimensions; bitrate ordering; WebM codec compatibility; duplicate shortcut detection; replay GOP trimming and hard byte limit. Passed.
+- Linux GCC 13 C++20 core tests, also under AddressSanitizer/UBSan with LeakSanitizer disabled because the container cannot inspect process threads: integer frame deadlines at 15/30/60/96/144/240 FPS (no early wakeup or duplicate timestamp); aspect-preserving letterbox geometry; resolution constraints and even dimensions; bitrate ordering; WebM codec compatibility; duplicate shortcut detection; replay GOP trimming and hard byte limit. Passed.
 
 ## Automated Windows checks (results are in Actions)
 
