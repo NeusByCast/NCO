@@ -57,6 +57,7 @@ class Log {
         verbose_ = v;
     }
     void write(const std::string& s, bool detail = false);
+    std::string snapshot();
     static Log& get();
 };
 class Hotkeys {

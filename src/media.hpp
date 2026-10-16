@@ -56,9 +56,13 @@ class VideoEncoder {
     FitRect viewport_{};
     bool gpu_ = false;
     Capture* capture_ = nullptr;
+    Com<ID3D11Texture2D> uploadNv12_, uploadStage_;
+    bool nv12Readback_ = false;
+    void convert(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT slice);
 
   public:
     std::string selected;
+    double prepareMs = 0, submitMs = 0;
     ~VideoEncoder();
     void open(const Config& config, Capture* capture, Size input, bool synthetic = false);
     Track track() const;
@@ -116,7 +120,7 @@ class DiskWriter {
         std::filesystem::path path, source;
         std::vector<Track> tracks;
         std::vector<Packet> clip;
-        bool remux = false;
+        bool remux = false, keepSource = false;
         std::string format;
     };
     std::jthread thread_, exportThread_;
@@ -137,6 +141,7 @@ class DiskWriter {
               std::string format);
     void write(Packet p, int64_t removed);
     void close();
+    void remux(std::filesystem::path source, std::filesystem::path target);
     void replay(std::filesystem::path path, std::vector<Track> tracks, std::vector<Packet> clip);
 };
 int mediaSelfTest();

@@ -10,13 +10,13 @@ Download **NCO-Setup.exe** from [Releases](https://github.com/NeusByCast/NCO/rel
 
 Choose a display or window on the dashboard and start recording. Configure FPS, resolution, quality and encoder in Recording settings. F9 starts/stops, F10 pauses/resumes, F8 saves replay by default. Microphone and speaker buttons mute independently. Enable replay in Recording settings; it continues independently of recording. Configure all shortcuts in Hotkeys, including single keys. Valid settings save immediately to `%LOCALAPPDATA%\NCO\settings.ini`.
 
-Encoding/capture settings are locked while recording or replay buffering. Stop recording and disable replay before changing them. Audio devices and mute/volume can change live. A source resize/disconnection may require reselecting the source. Errors appear in the status area and `%LOCALAPPDATA%\NCO\diagnostic.log`.
+Encoding/capture settings are locked only during normal recording. Replay-only settings changes restart the encoded buffer with the new configuration; clips already queued for export are unaffected. Audio devices and mute/volume can change live. Window resizing preserves the recording dimensions and aspect ratio; display-mode transitions retry Desktop Duplication on the same device. Device removal/disconnection may require reselecting the source. Errors appear in the status area and `%LOCALAPPDATA%\NCO\diagnostic.log`.
 
-Advanced settings show detected GPU adapters and memory, live process CPU/RAM use, encoder timing and missed deadlines. Capture compatibility can use Auto, force Windows Graphics Capture, or force Desktop Duplication for a display/region. A saved encoder that is unavailable on the current machine falls back to Auto after startup detection.
+Settings shows detected GPU adapters and memory, live process CPU/RAM use, encoder timing and missed deadlines. Capture compatibility can use Auto, force Windows Graphics Capture, or force Desktop Duplication for a display/region. A saved encoder that is unavailable on the current machine falls back to Auto after startup detection.
 
 Automatic remuxing records to a recoverable MKV and stream-copies to MP4/MOV/WebM after stopping; source is removed only after output verification. Recovery files remain if remux fails. WebM requires AV1 or VP9 and Opus; unavailable encoders are not offered. Auto selects compatible hardware, then software.
 
-Replay clips use the recording folder with a `Replay_` filename prefix. The five pages are Dashboard, Recording, Audio, Hotkeys and Advanced. Preview and animations stay enabled; preview capture/rendering pauses while minimized. Notifications last one second at the top-right.
+Replay clips use the recording folder with a `Replay_` filename prefix. The five pages are Dashboard, Recording, Audio, Hotkeys and Settings. Preview is up to 1280 pixels wide, at 60 FPS idle / 30 FPS while encoding; animation rendering remains independent. Preview and animations stay enabled; preview capture/rendering pauses while minimized. Notifications last one second at the top-right.
 
 Auto capture prefers Desktop Duplication for displays/regions, avoiding the Windows capture outline. Window capture uses WGC; border suppression depends on Windows permission/support. Preview targets 60 FPS using asynchronous thumbnail readback and an independent high-resolution UI timer. Hardware/driver load can reduce actual FPS.
 
@@ -42,3 +42,7 @@ Portable core checks on Linux:
 g++ -std=c++20 -O2 -I src tests/core_tests.cpp -o nco-core-tests
 ./nco-core-tests
 ```
+
+Auto prefers the high-performance GPU vendor and AMD adapter, with software encoding as a last resort. WGC window capture requests the high-performance GPU. Full-display Desktop Duplication must use the adapter driving that display; on hybrid laptops, cross-GPU hardware encoding uses GPU NV12 scaling/color conversion followed by a smaller NV12 readback/upload. This is not a universal zero-copy promise. Hardware texture frames use separate NV12 textures instead of arrays.
+
+Settings includes **Remux a recording**, an asynchronous stream-copy export that preserves the source and rejects existing destination files. Codec/container mismatches are rejected by the muxer. **Export diagnostics** creates NCO-diagnostic.txt with Windows build, adapter/driver details, current configuration, available encoders, output dimensions, actual FPS/bitrate, per-stage timing, frame-drop/resource counters and the bounded log. The log always samples active pipelines once per second and includes UTC timestamps and thread IDs. Verbose logging remains optional; no captured media is logged.

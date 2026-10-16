@@ -1,5 +1,6 @@
 #include "ui.hpp"
 #include <fstream>
+#include "diagnostics.hpp"
 
 namespace nco {
 // Uses the actual controls and Win32 edit/message paths. No capture hardware is simulated.
@@ -74,6 +75,24 @@ void UI::smokeControls() {
         }), "Removed dashboard controls or tabs are still visible");
         clickControl(L"nav1");
         require(page_ == 1, "Navigation button did not change page");
+        // Test actual settings layout independently of unavailable CI capture hardware.
+        const auto previousStats = stats_;
+        stats_.recording = false;
+        stats_.replay = true;
+        controls_.clear();
+        settings();
+        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
+            return control.id == L"fps" && control.enabled;
+        }), "Replay incorrectly locks Recording settings");
+        stats_.recording = true;
+        controls_.clear();
+        settings();
+        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
+            return control.id == L"fps" && !control.enabled;
+        }), "Active recording must protect its encoder configuration");
+        stats_ = previousStats;
+        draw();
+        report << "PASS replay allows Recording settings while active recording remains protected\n";
         clickControl(L"fps");
         require(popup_.open, "Dropdown did not open");
         clickControl(L"fps");
@@ -125,10 +144,24 @@ void UI::smokeControls() {
         clickControl(L"clear1");
         require(!cfg_.keys[1].key, "Clear shortcut button failed");
         page(6);
+        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
+            return control.id == L"manualRemux" && control.enabled;
+        }), "Manual remux control missing");
+        auto diagnostic = std::filesystem::path(L"nco-self-test") / L"diagnostic-export.txt";
+        exportDiagnostics(diagnostic, cfg_, stats_, dpi_, encoders_);
+        std::ifstream exported(diagnostic);
+        std::string contents((std::istreambuf_iterator<char>(exported)), {});
+        require(contents.find("prepare_ms=") != std::string::npos &&
+                contents.find("Windows=") != std::string::npos &&
+                contents.find("Recent timestamped log") != std::string::npos,
+                "Full diagnostic export missing critical fields");
+        SendMessageW(hwnd_, WM_ENTERSIZEMOVE, 0, 0);
+        SendMessageW(hwnd_, WM_TIMER, 4, 0);
+        SendMessageW(hwnd_, WM_EXITSIZEMOVE, 0, 0);
         toggle(L"logging", &Config::verbose);
         choose(L"captureApi", 2);
         require(cfg_.captureBackend == 2, "Capture compatibility dropdown failed");
-        report << "PASS interactive shortcut capture/clear/duplicates and advanced controls\n";
+        report << "PASS interactive shortcut capture/clear/duplicates and Settings controls, full diagnostic export and move-loop messages\n";
         if (exclusion_) {
             toast(L"Recording started");
             toastStart_ = clockUs() - 500000;

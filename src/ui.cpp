@@ -1,6 +1,8 @@
 #include "ui.hpp"
 #include <cmath>
 #include <commctrl.h>
+#include <commdlg.h>
+#include "diagnostics.hpp"
 #include <dwmapi.h>
 #include <fstream>
 #include <iomanip>
@@ -60,7 +62,7 @@ static void screenshot(HWND window, int page) {
 }
 int UI::run(int show) {
     cfg_ = Config::load();
-    Log::get().write("NCO 0.2.0 starting");
+    Log::get().write("NCO 0.3.0 starting");
     hardware_ = hardwareInfo();
     WNDCLASSEXW c{sizeof(c)};
     c.lpfnWndProc = proc;
@@ -466,7 +468,7 @@ void UI::command(int a) {
 void UI::dashboard() {
     float left = 206, right = w_ - 28, width = right - left;
     float y = 140 - float(scroll_);
-    bool locked = stats_.recording || stats_.replay;
+    bool locked = stats_.recording;
     std::wstring source =
         sources_.empty() ? L"No capture source" : sources_[size_t(sourceIndex_)].name;
     text(L"CAPTURE SOURCE", {left, y, right, y + 22}, 11, muted, true);
@@ -572,7 +574,7 @@ void UI::dashboard() {
 }
 void UI::settings() {
     float y = 140 - float(scroll_);
-    bool locked = stats_.recording || stats_.replay;
+    bool locked = stats_.recording;
     auto pick = [&](std::wstring id, std::wstring label, std::wstring value,
                     std::vector<std::wstring> items, int selected, std::function<void(int)> choose,
                     bool enabled = true) {
@@ -796,8 +798,9 @@ void UI::settings() {
         text(L"Recorded frames: " + std::to_wstring(stats_.frames) + L"   Skipped frames: " +
                  std::to_wstring(stats_.dropped),
              {222, y + 102, w_ - 42, y + 126}, 13, muted);
-        text(L"Average encoding time: " + std::to_wstring(stats_.encodeMs).substr(0, 5) +
-                 L" ms",
+        text(L"FPS: " + std::to_wstring(int(stats_.actualFps)) + L"   Output: " +
+                 std::to_wstring(stats_.output.w) + L" × " + std::to_wstring(stats_.output.h) +
+                 L"   Encoding: " + std::to_wstring(stats_.encodeMs).substr(0, 5) + L" ms",
              {222, y + 130, w_ - 42, y + 154}, 13, muted);
         y += 194;
         text(L"Process CPU: " + std::to_wstring(stats_.cpuPercent).substr(0, 5) +
@@ -815,11 +818,38 @@ void UI::settings() {
         field(L"exportlog", L"Export diagnostics", L"Choose export folder", y, [this](D2D1_RECT_F) {
             auto folder = folderDialog(hwnd_, cfg_.directory);
             if (!folder.empty()) {
-                std::filesystem::copy_file(appDir() / L"diagnostic.log",
-                                           std::filesystem::path(folder) / L"NCO-diagnostic.log",
-                                           std::filesystem::copy_options::overwrite_existing);
+                exportDiagnostics(std::filesystem::path(folder) / L"NCO-diagnostic.txt",
+                                  cfg_, engine_->stats(), dpi_, encoders_);
                 toast(L"Diagnostics exported");
             }
+        });
+        y += 68;
+        field(L"manualRemux", L"Remux a recording", L"Choose file… (original retained)", y,
+              [this](D2D1_RECT_F) {
+            wchar_t input[32768]{}, output[32768]{};
+            OPENFILENAMEW dialog{};
+            dialog.lStructSize = sizeof(dialog);
+            dialog.hwndOwner = hwnd_;
+            dialog.lpstrFilter = L"Recordings\0*.mkv;*.mp4;*.mov;*.webm\0All files\0*.*\0";
+            dialog.lpstrFile = input;
+            dialog.nMaxFile = DWORD(std::size(input));
+            dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            dialog.lpstrTitle = L"Choose recording to remux";
+            if (!GetOpenFileNameW(&dialog)) return;
+            std::filesystem::path source(input);
+            auto suggested = source.parent_path() / (source.stem().wstring() + L"-remux.mp4");
+            wcsncpy_s(output, suggested.c_str(), _TRUNCATE);
+            dialog.lpstrFile = output;
+            dialog.nMaxFile = DWORD(std::size(output));
+            dialog.lpstrFilter = L"MP4\0*.mp4\0Matroska\0*.mkv\0MOV\0*.mov\0WebM\0*.webm\0";
+            dialog.lpstrDefExt = L"mp4";
+            dialog.lpstrTitle = L"Save remuxed recording (no re-encoding)";
+            dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT;
+            if (!GetSaveFileNameW(&dialog)) return;
+            if (std::filesystem::exists(output))
+                throw std::runtime_error("Choose a new filename; existing recordings are preserved");
+            engine_->remux(source, output);
+            message_ = L"Remux queued";
         });
         y += 68;
         const std::vector<std::wstring> apis = {L"Auto (recommended)", L"Windows Graphics Capture",
@@ -922,7 +952,7 @@ void UI::draw() {
     round({0, 0, 178, h_}, D2D1::ColorF(0x211913), 0);
     text(L"NCO", {12, 20, 166, 64}, 28, ink, true, true);
     const wchar_t* titles[] = {L"Dashboard", L"Recording",  L"Audio",   L"Replay",
-                               L"Hotkeys",   L"Appearance", L"Advanced"};
+                               L"Hotkeys",   L"Appearance", L"Settings"};
     const int pages[] = {0, 1, 2, 4, 6};
     for (int n = 0; n < 5; ++n) {
         const int i = pages[n];
@@ -975,8 +1005,7 @@ void UI::draw() {
     }
     round({180, h_ - 36, w_, h_}, bg, 0);
     text(message_.empty() ? (stats_.recording ? L"● Recording"
-                             : stats_.replay  ? L"● Replay buffer active"
-                                              : L"")
+                             : L"")
                           : message_,
          {206, h_ - 34, w_ - 26, h_ - 3}, 11, message_.empty() ? muted : danger);
     popup();
@@ -1222,6 +1251,13 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         info->ptMaxSize = {mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top};
         return 0;
     }
+    case WM_ENTERSIZEMOVE:
+        SetTimer(h, 4, 16, nullptr);
+        return 0;
+    case WM_EXITSIZEMOVE:
+        KillTimer(h, 4);
+        invalidate();
+        return 0;
     case WM_SIZE:
         updatePreviewTimer();
         if (engine_)
@@ -1352,6 +1388,13 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         return reinterpret_cast<LRESULT>(b);
     }
     case WM_TIMER:
+        if (w == 4) {
+            if (page_ == 0 && !IsIconic(h)) {
+                invalidate();
+                UpdateWindow(h);
+            }
+            return 0;
+        }
         if (w == 3) {
             screenshot(h, smokeStep_);
             if (++smokeStep_ >= 6) {

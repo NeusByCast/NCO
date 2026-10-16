@@ -20,6 +20,10 @@ class Capture {
     Com<ID3D11Device> device_;
     Com<ID3D11DeviceContext> context_;
     Com<IDXGIOutputDuplication> dup_;
+    Com<IDXGIOutput1> output_;
+    int64_t retryDuplication_ = 0;
+    bool pointerVisible_ = false;
+    POINT pointerPosition_{};
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{nullptr};
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool_{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
@@ -31,6 +35,14 @@ class Capture {
     Source source_;
     bool fallback_ = false, pointerFailed_ = false;
     PointerOverlay pointer_;
+    winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice wgcDevice_{nullptr};
+    winrt::Windows::Graphics::SizeInt32 poolSize_{};
+    Com<ID3D11VideoDevice> scaleDevice_;
+    Com<ID3D11VideoContext> scaleContext_;
+    Com<ID3D11VideoProcessorEnumerator> scaleEnum_;
+    Com<ID3D11VideoProcessor> scaleProcessor_;
+    Size scaleInput_{};
+    void copyFrame(ID3D11Texture2D* raw);
     Com<ID3D11VideoDevice> thumbDevice_;
     Com<ID3D11VideoContext> thumbContext_;
     Com<ID3D11VideoProcessorEnumerator> thumbEnum_;

@@ -4,10 +4,12 @@
 namespace nco {
 struct EngineStats {
     bool recording = false, paused = false, replay = false, ready = false, gpu = false;
-    uint64_t frames = 0, dropped = 0;
+    uint64_t frames = 0, dropped = 0, freshFrames = 0;
     size_t replayBytes = 0;
     int64_t durationUs = 0;
-    double encodeMs = 0, cpuPercent = 0, workingSetMiB = 0;
+    Size output{};
+    double actualFps = 0, bitrateMbps = 0, prepareMs = 0, submitMs = 0;
+    double encodeMs = 0, captureMs = 0, cpuPercent = 0, workingSetMiB = 0;
     std::string encoder;
 };
 struct Preview {
@@ -24,6 +26,7 @@ class Engine {
     Source source_;
     uint64_t generation_ = 0;
     std::deque<Action> actions_;
+    std::deque<std::pair<std::filesystem::path, std::filesystem::path>> remuxRequests_;
     EngineStats stats_;
     Preview preview_;
     std::atomic<bool> visible_ = true;
@@ -39,6 +42,7 @@ class Engine {
     void pause();
     void replay();
     void refreshAudio();
+    void remux(std::filesystem::path source, std::filesystem::path target);
     void visible(bool value) {
         visible_ = value;
         SetEvent(wake_);

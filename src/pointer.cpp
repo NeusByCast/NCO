@@ -1,7 +1,7 @@
 #include "pointer.hpp"
 #include <dxgi.h>
 namespace nco {
-void PointerOverlay::draw(IDXGISurface* surface, const RECT& screenRegion) {
+void PointerOverlay::draw(IDXGISurface* surface, const RECT& screenRegion, POINT position) {
     CURSORINFO info{sizeof(info)};
     if (!GetCursorInfo(&info) || !(info.flags & CURSOR_SHOWING))
         return;
@@ -67,8 +67,8 @@ void PointerOverlay::draw(IDXGISurface* surface, const RECT& screenRegion) {
                   &bitmap_), "Cursor bitmap");
         cursor_ = info.hCursor;
     }
-    const float x = float(info.ptScreenPos.x - screenRegion.left - hotspot_.x);
-    const float y = float(info.ptScreenPos.y - screenRegion.top - hotspot_.y);
+    const float x = float(position.x - screenRegion.left - hotspot_.x);
+    const float y = float(position.y - screenRegion.top - hotspot_.y);
     auto size = bitmap_->GetSize();
     target_->BeginDraw();
     target_->DrawBitmap(bitmap_.Get(), {x, y, x + size.width, y + size.height});

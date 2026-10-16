@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include <cstdio>
 #include <dxgi1_2.h>
 #include <fstream>
 #include <iomanip>
@@ -145,13 +146,29 @@ void Log::write(const std::string& s, bool detail) {
     try {
         auto path = appDir() / L"diagnostic.log";
         if (std::filesystem::exists(path) && std::filesystem::file_size(path) > 1024 * 1024) {
+            std::ifstream old(path, std::ios::binary);
+            old.seekg(-512 * 1024, std::ios::end);
+            std::string tail((std::istreambuf_iterator<char>(old)), {});
+            old.close();
+            auto newline = tail.find('\n');
+            if (newline != std::string::npos) tail.erase(0, newline + 1);
             std::ofstream truncate(path, std::ios::trunc);
-            truncate << "NCO log rotated at 1 MiB\n";
+            truncate << "NCO log rotated; recent history retained\n" << tail;
         }
         std::ofstream f(path, std::ios::app);
-        f << clockUs() << " " << s << "\n";
+        SYSTEMTIME utc{};
+        GetSystemTime(&utc);
+        char timestamp[40]{};
+        snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+                 utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond, utc.wMilliseconds);
+        f << timestamp << " t_us=" << clockUs() << " tid=" << GetCurrentThreadId() << " " << s << "\n";
     } catch (...) {
     }
+}
+std::string Log::snapshot() {
+    std::lock_guard lock(mutex_);
+    std::ifstream input(appDir() / L"diagnostic.log", std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), {});
 }
 std::vector<std::wstring> Hotkeys::apply(const std::vector<Shortcut>& keys) {
     std::vector<std::wstring> errors(keys.size());

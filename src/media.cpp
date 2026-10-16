@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cstdarg>
 #include <cstdio>
+#include <dxgi1_6.h>
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
@@ -27,23 +28,55 @@ static void mediaLog(void*, int level, const char* format, va_list args) {
     if (!line.empty())
         Log::get().write("Media: " + line);
 }
-static std::vector<int> amdAdapters() {
-    std::vector<int> indices;
+static std::vector<int> preferredAdapters(UINT vendor = 0) {
+    std::vector<int> result;
     Com<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
-        return indices;
-    for (UINT i = 0;; ++i) {
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return result;
+    Com<IDXGIFactory6> modern;
+    factory.As(&modern);
+    for (UINT rank = 0;; ++rank) {
         Com<IDXGIAdapter1> adapter;
-        if (factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND)
-            break;
-        if (!adapter)
-            continue;
-        DXGI_ADAPTER_DESC1 desc{};
-        if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.VendorId == 0x1002 &&
-            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
-            indices.push_back(int(i));
+        HRESULT hr = modern ? modern->EnumAdapterByGpuPreference(rank,
+            DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter))
+            : factory->EnumAdapters1(rank, &adapter);
+        if (hr == DXGI_ERROR_NOT_FOUND) break;
+        if (FAILED(hr) || !adapter) break;
+        DXGI_ADAPTER_DESC1 d{};
+        adapter->GetDesc1(&d);
+        if ((d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) || (vendor && d.VendorId != vendor)) continue;
+        for (UINT index = 0;; ++index) {
+            Com<IDXGIAdapter1> candidate;
+            if (factory->EnumAdapters1(index, &candidate) == DXGI_ERROR_NOT_FOUND) break;
+            DXGI_ADAPTER_DESC1 c{};
+            if (candidate && SUCCEEDED(candidate->GetDesc1(&c)) &&
+                c.AdapterLuid.HighPart == d.AdapterLuid.HighPart &&
+                c.AdapterLuid.LowPart == d.AdapterLuid.LowPart) {
+                result.push_back(int(index));
+                break;
+            }
+        }
     }
-    return indices;
+    return result;
+}
+static bool preferredCaptureDevice(Capture* capture) {
+    auto preferred = preferredAdapters();
+    if (!capture || preferred.empty()) return true;
+    Com<IDXGIDevice> dx;
+    Com<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC current{};
+    if (FAILED(capture->device()->QueryInterface(IID_PPV_ARGS(&dx))) ||
+        FAILED(dx->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&current))) return false;
+    Com<IDXGIFactory1> factory;
+    Com<IDXGIAdapter1> best;
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
+        FAILED(factory->EnumAdapters1(UINT(preferred.front()), &best)) ||
+        FAILED(best->GetDesc1(&desc))) return false;
+    return current.AdapterLuid.HighPart == desc.AdapterLuid.HighPart &&
+           current.AdapterLuid.LowPart == desc.AdapterLuid.LowPart;
+}
+static std::vector<int> amdAdapters() {
+    return preferredAdapters(0x1002);
 }
 static AVBufferRef* adapterDevice(int index) {
     AVBufferRef* device = nullptr;
@@ -118,6 +151,8 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     if (name.find("amf") != std::string::npos) {
         av_opt_set(c->priv_data, "usage", "lowlatency", 0);
         av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
+        av_opt_set_int(c->priv_data, "frame_skipping", 0, 0);
+        av_opt_set_int(c->priv_data, "async_depth", 3, 0);
         av_opt_set(c->priv_data, "quality", "speed", 0);
     }
     if (name.find("_mf") != std::string::npos) {
@@ -209,6 +244,22 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
         names = {"av1_nvenc", "av1_amf", "av1_qsv", "libvpx-vp9"};
     else
         names = {"h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"};
+    if (cfg.encoder == "auto") {
+        auto adapters = preferredAdapters();
+        Com<IDXGIFactory1> factory;
+        Com<IDXGIAdapter1> adapter;
+        DXGI_ADAPTER_DESC1 desc{};
+        if (!adapters.empty() && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+            SUCCEEDED(factory->EnumAdapters1(UINT(adapters.front()), &adapter)) &&
+            SUCCEEDED(adapter->GetDesc1(&desc))) {
+            std::string vendor = desc.VendorId == 0x1002 ? "amf" :
+                                 desc.VendorId == 0x10de ? "nvenc" : "qsv";
+            std::stable_partition(names.begin(), names.end(), [&](const auto& name) {
+                return name.find(vendor) != std::string::npos;
+            });
+            Log::get().write("Preferred encoder GPU: " + utf8(desc.Description));
+        }
+    }
     std::string failures;
     for (auto& name : names) {
         if (!containerCompatible(cfg.format, name))
@@ -217,7 +268,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
         if (!codec)
             continue;
         bool canGpu =
-            !synthetic && capture &&
+            !synthetic && capture && preferredCaptureDevice(capture) &&
             (name.find("nvenc") != std::string::npos || name.find("amf") != std::string::npos ||
              name.find("_mf") != std::string::npos);
         std::vector<int> attempts;
@@ -257,11 +308,19 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     f->sw_format = AV_PIX_FMT_NV12;
                     f->width = output_.w;
                     f->height = output_.h;
-                    f->initial_pool_size = 6;
+                    // Individual NV12 textures: several drivers reject render-target arrays.
+                    f->initial_pool_size = 0;
                     auto fd = reinterpret_cast<AVD3D11VAFramesContext*>(f->hwctx);
                     fd->BindFlags = D3D11_BIND_RENDER_TARGET;
                     avcheck(av_hwframe_ctx_init(frames_), "Hardware frame pool");
+                    AVFrame* probe = av_frame_alloc();
+                    if (!probe) throw std::bad_alloc();
+                    const int allocation = av_hwframe_get_buffer(frames_, probe, 0);
+                    av_frame_free(&probe);
+                    avcheck(allocation, "GPU encoder texture preflight");
                     codec_->hw_frames_ctx = av_buffer_ref(frames_);
+                }
+                if (capture && (gpu_ || fmt == AV_PIX_FMT_NV12)) {
                     check(capture->device()->QueryInterface(IID_PPV_ARGS(&vd_)),
                           "D3D video device");
                     check(capture->context()->QueryInterface(IID_PPV_ARGS(&vc_)),
@@ -305,7 +364,28 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     const int* coeff = sws_getCoefficients(SWS_CS_ITU709);
                     sws_setColorspaceDetails(sws_, coeff, 1, coeff, 0, 0, 1 << 16, 1 << 16);
                 }
+                nv12Readback_ = !gpu_ && capture && fmt == AV_PIX_FMT_NV12;
+                if (nv12Readback_) {
+                    D3D11_TEXTURE2D_DESC d{};
+                    d.Width = output_.w;
+                    d.Height = output_.h;
+                    d.MipLevels = d.ArraySize = d.SampleDesc.Count = 1;
+                    d.Format = DXGI_FORMAT_NV12;
+                    d.BindFlags = D3D11_BIND_RENDER_TARGET;
+                    check(capture->device()->CreateTexture2D(&d, nullptr, &uploadNv12_),
+                          "NV12 upload conversion texture");
+                    d.BindFlags = 0;
+                    d.Usage = D3D11_USAGE_STAGING;
+                    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                    check(capture->device()->CreateTexture2D(&d, nullptr, &uploadStage_),
+                          "NV12 upload staging texture");
+                }
                 selected = name;
+                Log::get().write("Video output=" + std::to_string(output_.w) + "x" +
+                    std::to_string(output_.h) + " fps=" + std::to_string(cfg.fps) +
+                    " bitrate_bps=" + std::to_string(codec_->bit_rate) +
+                    " quality=" + std::to_string(cfg.quality) + " container=" + cfg.format +
+                    " GPU_NV12_readback=" + std::to_string(nv12Readback_));
                 Log::get().write("Encoder: " + name +
                                  (gpu_ ? " GPU texture path" : name.find("lib") == 0 ? " software encoding" : " hardware encoding with frame upload") +
                                  " adapter=" + std::to_string(attempt));
@@ -320,6 +400,9 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 av_buffer_unref(&device_);
                 sws_freeContext(sws_);
                 sws_ = nullptr;
+                uploadNv12_.Reset();
+                uploadStage_.Reset();
+                nv12Readback_ = false;
                 processor_.Reset();
                 enumerator_.Reset();
                 vd_.Reset();
@@ -364,12 +447,7 @@ void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
                         nullptr};
     sws_scale(sws_, src, lines, 0, input_.h, dest, frame_->linesize);
 }
-std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool key) {
-    if (gpu_) {
-        av_frame_unref(frame_);
-        avcheck(av_hwframe_get_buffer(frames_, frame_, 0), "GPU encoder frame");
-        auto out = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
-        UINT slice = UINT(reinterpret_cast<uintptr_t>(frame_->data[1]));
+void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice) {
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
         id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
         id.Texture2D.MipSlice = 0;
@@ -377,7 +455,10 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         Com<ID3D11VideoProcessorInputView> iv;
         check(vd_->CreateVideoProcessorInputView(t, enumerator_.Get(), &id, &iv), "GPU input view");
         D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
-        od.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2DARRAY;
+        D3D11_TEXTURE2D_DESC textureDesc{};
+        out->GetDesc(&textureDesc);
+        od.ViewDimension = textureDesc.ArraySize > 1 ? D3D11_VPOV_DIMENSION_TEXTURE2DARRAY
+                                                     : D3D11_VPOV_DIMENSION_TEXTURE2D;
         od.Texture2DArray.MipSlice = 0;
         od.Texture2DArray.FirstArraySlice = slice;
         od.Texture2DArray.ArraySize = 1;
@@ -406,6 +487,31 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         stream.pInputSurface = iv.Get();
         check(vc_->VideoProcessorBlt(processor_.Get(), ov.Get(), 0, 1, &stream),
               "GPU scale and NV12 conversion");
+}
+std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool key) {
+    const auto begin = clockUs();
+    if (gpu_) {
+        av_frame_unref(frame_);
+        avcheck(av_hwframe_get_buffer(frames_, frame_, 0), "GPU encoder frame");
+        auto out = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
+        UINT slice = UINT(reinterpret_cast<uintptr_t>(frame_->data[1]));
+        convert(t, out, slice);
+    } else if (nv12Readback_) {
+        avcheck(av_frame_make_writable(frame_), "Writable NV12 frame");
+        convert(t, uploadNv12_.Get(), 0);
+        capture_->context()->CopyResource(uploadStage_.Get(), uploadNv12_.Get());
+        D3D11_MAPPED_SUBRESOURCE map{};
+        check(capture_->context()->Map(uploadStage_.Get(), 0, D3D11_MAP_READ, 0, &map),
+              "NV12 upload readback");
+        auto bytes = static_cast<const uint8_t*>(map.pData);
+        for (int y = 0; y < output_.h; ++y)
+            memcpy(frame_->data[0] + size_t(y) * frame_->linesize[0],
+                   bytes + size_t(y) * map.RowPitch, output_.w);
+        bytes += size_t(output_.h) * map.RowPitch;
+        for (int y = 0; y < output_.h / 2; ++y)
+            memcpy(frame_->data[1] + size_t(y) * frame_->linesize[1],
+                   bytes + size_t(y) * map.RowPitch, output_.w);
+        capture_->context()->Unmap(uploadStage_.Get(), 0);
     } else {
         auto b = capture_->download(t);
         prepareCpu(b.data(), input_.w * 4);
@@ -413,7 +519,11 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
     frame_->pts = pts;
     frame_->duration = 1;
     frame_->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
-    return send(frame_);
+    const auto submit = clockUs();
+    auto packets = send(frame_);
+    prepareMs = prepareMs * .9 + double(submit - begin) / 1000 * .1;
+    submitMs = submitMs * .9 + double(clockUs() - submit) / 1000 * .1;
+    return packets;
 }
 std::vector<Packet> VideoEncoder::synthetic(int64_t pts, bool key) {
     std::vector<uint8_t> b(size_t(input_.w) * input_.h * 4);
@@ -608,6 +718,8 @@ bool verifyFile(const std::filesystem::path& p) {
     return verifyContents(p);
 }
 void remuxFile(const std::filesystem::path& source, const std::filesystem::path& target) {
+    if (std::filesystem::exists(target))
+        throw std::runtime_error("Remux destination already exists; choose a new filename");
     AVFormatContext* in = nullptr;
     avcheck(avformat_open_input(&in, utf8(source.wstring()).c_str(), nullptr, nullptr),
             "Open remux source");
@@ -700,7 +812,7 @@ void DiskWriter::pushExport(Job job) {
     size_t amount = 0;
     for (auto& packet : job.clip)
         amount += packet.bytes();
-    if (exportBytes_ + amount > 256u * 1024u * 1024u)
+    if (exports_.size() >= 8 || exportBytes_ + amount > 256u * 1024u * 1024u)
         throw std::runtime_error("Replay export queue is full; wait for pending clips to finish");
     exportBytes_ += amount;
     exports_.push_back(std::move(job));
@@ -723,6 +835,13 @@ void DiskWriter::write(Packet packet, int64_t removed) {
 }
 void DiskWriter::close() {
     push({Job::Close});
+}
+void DiskWriter::remux(std::filesystem::path source, std::filesystem::path target) {
+    Job job{Job::Remux};
+    job.source = std::move(source);
+    job.path = std::move(target);
+    job.keepSource = true;
+    pushExport(std::move(job));
 }
 void DiskWriter::replay(std::filesystem::path path, std::vector<Track> tracks,
                         std::vector<Packet> clip) {
@@ -818,7 +937,10 @@ void DiskWriter::exportRun() {
                 notify_("Replay saved", false);
             } else if (job.type == Job::Remux) {
                 remuxFile(job.source, job.path);
-                std::filesystem::remove(job.source);
+                if (!job.keepSource)
+                    std::filesystem::remove(job.source);
+                else
+                    notify_("Remux complete; original retained", false);
             } else if (job.type == Job::Verify && !verifyFile(job.path)) {
                 throw std::runtime_error("Recording failed packet verification; file retained");
             }

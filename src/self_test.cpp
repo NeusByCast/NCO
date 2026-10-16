@@ -127,6 +127,7 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
 
     if (format == "mkv") {
         auto target = dir / "remux.mp4";
+        std::filesystem::remove(target);
         remuxFile(path, target);
         auto remuxed = inspect(target);
         require(remuxed.size() == streams.size(), "Remux lost a stream");
@@ -136,7 +137,9 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
         }
         std::mutex eventsMutex;
         std::vector<std::string> errors;
-        int saved = 0;
+        int saved = 0, remuxedFiles = 0;
+        std::filesystem::remove(dir / "manual-remux.mp4");
+        std::filesystem::remove(dir / "threaded-recording.mp4");
         {
             DiskWriter writer([&](std::string event, bool error) {
                 std::lock_guard lock(eventsMutex);
@@ -144,6 +147,8 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
                     errors.push_back(event);
                 if (event == "Replay saved")
                     ++saved;
+                if (event == "Remux complete; original retained")
+                    ++remuxedFiles;
             });
             writer.open(dir / "threaded-recording.mp4", tracks, true, "mp4");
             for (size_t i = 0; i < packets.size(); ++i) {
@@ -154,7 +159,16 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
                 }
             }
             writer.close();
+            writer.remux(path, dir / "manual-remux.mp4");
         }
+        require(remuxedFiles == 1 && std::filesystem::exists(path),
+                "Manual remux must complete asynchronously and retain its source");
+        auto manual = inspect(dir / "manual-remux.mp4");
+        require(manual[0].packets == streams[0].packets, "Manual remux lost video packets");
+        bool overwriteRejected = false;
+        try { remuxFile(path, dir / "manual-remux.mp4"); }
+        catch (const std::exception&) { overwriteRejected = true; }
+        require(overwriteRejected && verifyFile(path), "Remux overwrite must be rejected safely");
         require(errors.empty(), errors.empty() ? "" : errors.front());
         require(saved == 3, "Concurrent replay exports did not finish");
         require(inspect(dir / "threaded-recording.mp4")[0].packets == 90,
@@ -200,6 +214,7 @@ void separateTrackRemux(const std::filesystem::path& dir) {
     write(mic.flush());
     write(desktop.flush());
     mux.close();
+    std::filesystem::remove(target);
     remuxFile(source, target);
     auto before = inspect(source), after = inspect(target);
     require(before.size() == 3 && after.size() == 3, "Remux lost an independent audio track");
@@ -309,7 +324,7 @@ int mediaSelfTest() {
         report << "PASS 15/30/60 FPS, five quality levels, native/custom scaling\n";
         replayDurations(dir);
         report << "PASS 15/30/60-second replay rings with accelerated synthetic A/V\n";
-        report << "PASS MKV-to-MP4 stream-copy remux preserves codecs and packet counts\n";
+        report << "PASS automatic/manual background remux preserves codecs, packets and original; overwrite rejected\n";
         separateTrackRemux(dir);
         report << "PASS independent microphone/desktop tracks survive verified MKV-to-MP4 remux\n";
         report << "UNVERIFIED hardware capture, WASAPI, real audio synchronization, long-run "

@@ -48,6 +48,13 @@ void Engine::replay() {
     actions_.push_back(ReplaySave);
     SetEvent(wake_);
 }
+void Engine::remux(std::filesystem::path source, std::filesystem::path target) {
+    std::lock_guard lock(mutex_);
+    if (remuxRequests_.size() >= 8)
+        throw std::runtime_error("Remux queue is full; wait for pending exports");
+    remuxRequests_.emplace_back(std::move(source), std::move(target));
+    SetEvent(wake_);
+}
 void Engine::refreshAudio() {
     std::lock_guard lock(mutex_);
     actions_.push_back(AudioRefresh);
@@ -84,7 +91,7 @@ void Engine::run(std::stop_token token) {
     uint64_t gen = 0;
     int64_t epoch = 0, nextVideo = 0, nextFrame = 0, audioPts = 0, recordStart = 0, pauseStart = 0,
             removed = 0, lastPreview = 0, lastUsage = 0;
-    uint64_t lastCpu = 0;
+    uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
     bool suspended = false;
     EngineStats local;
@@ -105,6 +112,9 @@ void Engine::run(std::stop_token token) {
                         ring.push(p);
                 }
         }
+        if (video)
+            Log::get().write("Pipeline finalized frames=" + std::to_string(local.frames) +
+                             " dropped=" + std::to_string(local.dropped));
         video.reset();
         audio.clear();
         mic.stop();
@@ -147,11 +157,21 @@ void Engine::run(std::stop_token token) {
         desktop.start(false, cfg.desktopDevice,
                       [this](std::string e) { notify_(std::move(e), true); });
         local.encoder = video->selected;
-        local.gpu = video->gpu();
-        local.frames = local.dropped = 0;
+        local.gpu = video->selected.find("lib") != 0;
+        local.frames = local.dropped = local.freshFrames = 0;
+        local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = 0;
+        local.output = resolution(cfg.resolutionMode, cfg.width, cfg.height, capture->size());
+        usageFrames = videoBytes = usageBytes = 0;
+        lastUsage = 0;
+        Log::get().write("Pipeline started replay=" + std::to_string(cfg.replay) +
+                         " audio_tracks=" + std::to_string(count) +
+                         " auto_remux=" + std::to_string(cfg.remux) +
+                         " capture=" + std::to_string(capture->size().w) + "x" +
+                         std::to_string(capture->size().h));
     };
     auto packets = [&](std::vector<Packet> ps) {
         for (auto& p : ps) {
+            if (p.stream == 0) videoBytes += p.bytes();
             if (replay)
                 ring.push(p);
             if (recording && !paused) {
@@ -170,12 +190,21 @@ void Engine::run(std::stop_token token) {
             Source src;
             uint64_t newGen;
             std::deque<Action> actions;
+            std::deque<std::pair<std::filesystem::path, std::filesystem::path>> remuxRequests;
             {
                 std::lock_guard lock(mutex_);
                 newGen = generation_;
                 current = config_;
                 src = source_;
                 actions.swap(actions_);
+                remuxRequests.swap(remuxRequests_);
+            }
+            for (auto& request : remuxRequests) {
+                try {
+                    disk.remux(std::move(request.first), std::move(request.second));
+                } catch (const std::exception& e) {
+                    notify_(std::string("Remux failed: ") + e.what(), true);
+                }
             }
             if (newGen != gen) {
                 bool captureChanged =
@@ -316,8 +345,11 @@ void Engine::run(std::stop_token token) {
             if (capture && source.window && !IsWindow(source.window))
                 throw std::runtime_error("The selected window closed. Select another source.");
             if (capture && (video || (cfg.preview && visible_))) {
+                int64_t captureBegin = clockUs();
                 bool fresh = capture->frame(texture);
-                (void)fresh;
+                local.captureMs = local.captureMs * .9 + double(clockUs() - captureBegin) / 1000 * .1;
+                if (fresh) ++local.freshFrames;
+                now = clockUs();
                 if (video && texture && now >= nextVideo) {
                     int64_t frameIndex = (now - epoch) * cfg.fps / 1000000;
                     if (frameIndex > nextFrame)
@@ -326,11 +358,13 @@ void Engine::run(std::stop_token token) {
                     int64_t begin = clockUs();
                     packets(video->encode(texture.Get(), frameIndex, forceKey));
                     forceKey = false;
+                    local.prepareMs = video->prepareMs;
+                    local.submitMs = video->submitMs;
                     local.encodeMs = local.encodeMs * .9 + double(clockUs() - begin) / 1000 * .1;
                     ++local.frames;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }
-                if (cfg.preview && visible_ && texture && now - lastPreview >= 16667) {
+                if (cfg.preview && visible_ && texture && now - lastPreview >= (video ? (local.encodeMs > 800.0 / cfg.fps ? 100000 : 33333) : 16667)) {
                     try {
                         auto p = capture->thumbnail(texture.Get());
                         if (!p.second.empty()) {
@@ -413,11 +447,25 @@ void Engine::run(std::stop_token token) {
                 PROCESS_MEMORY_COUNTERS memory{};
                 if (GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory)))
                     local.workingSetMiB = double(memory.WorkingSetSize) / 1048576;
+                if (lastUsage && video) {
+                    local.actualFps = double(local.frames - usageFrames) * 1000000 / (now - lastUsage);
+                    local.bitrateMbps = double(videoBytes - usageBytes) * 8 / (now - lastUsage);
+                }
+                usageFrames = local.frames;
+                usageBytes = videoBytes;
                 lastUsage = now;
-                if (video && (cfg.verbose || local.dropped))
+                if (video)
                     Log::get().write("Frames=" + std::to_string(local.frames) +
                                          " dropped=" + std::to_string(local.dropped) +
+                                         " fps=" + std::to_string(local.actualFps) +
+                                         " video_Mbps=" + std::to_string(local.bitrateMbps) +
+                                         " output=" + std::to_string(local.output.w) + "x" + std::to_string(local.output.h) +
+                                         " prepare_ms=" + std::to_string(local.prepareMs) +
+                                         " submit_ms=" + std::to_string(local.submitMs) +
                                          " encode_ms=" + std::to_string(local.encodeMs) +
+                                         " capture_ms=" + std::to_string(local.captureMs) +
+                                         " fresh_frames=" + std::to_string(local.freshFrames) +
+                                         " replay_MiB=" + std::to_string(ring.bytes() / 1048576.0) +
                                          " cpu_percent=" + std::to_string(local.cpuPercent) +
                                          " working_set_MiB=" + std::to_string(local.workingSetMiB) +
                                          " mic_discontinuities=" + std::to_string(mic.discontinuities.load()) +
