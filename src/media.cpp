@@ -153,7 +153,10 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
         av_opt_set_int(c->priv_data, "frame_skipping", 0, 0);
         av_opt_set_int(c->priv_data, "async_depth", 3, 0);
-        av_opt_set(c->priv_data, "quality", "speed", 0);
+        av_opt_set(c->priv_data, "quality", cfg.quality >= 2 ? "balanced" : "speed", 0);
+        av_opt_set(c->priv_data, "rc", "vbr_peak", 0);
+        c->rc_max_rate = std::min<int64_t>(150000000, c->bit_rate * 2);
+        c->rc_buffer_size = int(std::min<int64_t>(300000000, c->bit_rate * 2));
     }
     if (name.find("_mf") != std::string::npos) {
         av_opt_set_int(c->priv_data, "hw_encoding", 1, 0);
@@ -388,13 +391,14 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     d.BindFlags = 0;
                     d.Usage = D3D11_USAGE_STAGING;
                     d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-                    check(capture->device()->CreateTexture2D(&d, nullptr, &uploadStage_),
-                          "NV12 upload staging texture");
+                    for (auto& stage : uploadStages_)
+                        check(capture->device()->CreateTexture2D(&d, nullptr, &stage),
+                              "NV12 upload staging texture");
                     } catch (const std::exception& error) {
                         Log::get().write(std::string("NV12 readback unavailable; retaining hardware encoding with CPU conversion: ") + error.what());
                         nv12Readback_ = false;
                         uploadNv12_.Reset();
-                        uploadStage_.Reset();
+                        for (auto& stage : uploadStages_) stage.Reset();
                     }
                 }
                 selected = name;
@@ -437,7 +441,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 sws_freeContext(sws_);
                 sws_ = nullptr;
                 uploadNv12_.Reset();
-                uploadStage_.Reset();
+                for (auto& stage : uploadStages_) stage.Reset();
                 nv12Readback_ = false;
                 processor_.Reset();
                 enumerator_.Reset();
@@ -524,21 +528,23 @@ void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice)
     check(vc_->VideoProcessorBlt(processor_.Get(), ov.Get(), 0, 1, &stream),
           "GPU scale and NV12 conversion");
 }
-std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool key) {
+bool VideoEncoder::drainReadback(bool wait, std::vector<Packet>& output) {
+    int index = -1;
+    for (int i = 0; i < int(readbacks_.size()); ++i)
+        if (readbacks_[size_t(i)].pending &&
+            (index < 0 || readbacks_[size_t(i)].pts < readbacks_[size_t(index)].pts))
+            index = i;
+    if (index < 0) return false;
+    auto& job = readbacks_[size_t(index)];
+    auto stage = uploadStages_[size_t(index)].Get();
+    D3D11_MAPPED_SUBRESOURCE map{};
     const auto begin = clockUs();
-    if (gpu_) {
-        av_frame_unref(frame_);
-        avcheck(av_hwframe_get_buffer(frames_, frame_, 0), "GPU encoder frame");
-        auto out = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
-        UINT slice = UINT(reinterpret_cast<uintptr_t>(frame_->data[1]));
-        convert(t, out, slice);
-    } else if (nv12Readback_) {
+    const HRESULT mapped = capture_->context()->Map(stage, 0, D3D11_MAP_READ,
+        wait ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+    if (mapped == DXGI_ERROR_WAS_STILL_DRAWING) return false;
+    check(mapped, "Asynchronous NV12 readback");
+    try {
         avcheck(av_frame_make_writable(frame_), "Writable NV12 frame");
-        convert(t, uploadNv12_.Get(), 0);
-        capture_->context()->CopyResource(uploadStage_.Get(), uploadNv12_.Get());
-        D3D11_MAPPED_SUBRESOURCE map{};
-        check(capture_->context()->Map(uploadStage_.Get(), 0, D3D11_MAP_READ, 0, &map),
-              "NV12 upload readback");
         auto bytes = static_cast<const uint8_t*>(map.pData);
         for (int y = 0; y < output_.h; ++y)
             memcpy(frame_->data[0] + size_t(y) * frame_->linesize[0],
@@ -547,7 +553,53 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         for (int y = 0; y < output_.h / 2; ++y)
             memcpy(frame_->data[1] + size_t(y) * frame_->linesize[1],
                    bytes + size_t(y) * map.RowPitch, output_.w);
-        capture_->context()->Unmap(uploadStage_.Get(), 0);
+    } catch (...) {
+        capture_->context()->Unmap(stage, 0);
+        throw;
+    }
+    capture_->context()->Unmap(stage, 0);
+    frame_->pts = job.pts;
+    frame_->duration = 1;
+    frame_->pict_type = job.key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
+    job.pending = false;
+    const auto submit = clockUs();
+    auto packets = send(frame_);
+    ++submittedFrames;
+    prepareMs = prepareMs * .9 + double(submit - begin) / 1000 * .1;
+    submitMs = submitMs * .9 + double(clockUs() - submit) / 1000 * .1;
+    output.insert(output.end(), std::make_move_iterator(packets.begin()),
+                  std::make_move_iterator(packets.end()));
+    return true;
+}
+std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool key) {
+    const auto begin = clockUs();
+    if (nv12Readback_) {
+        pendingKey_ = pendingKey_ || key;
+        std::vector<Packet> output;
+        while (drainReadback(false, output)) {}
+        int free = -1;
+        for (int i = 0; i < int(readbacks_.size()); ++i)
+            if (!readbacks_[size_t(i)].pending) { free = i; break; }
+        if (free >= 0) {
+            convert(t, uploadNv12_.Get(), 0);
+            capture_->context()->CopyResource(uploadStages_[size_t(free)].Get(), uploadNv12_.Get());
+            readbacks_[size_t(free)] = {true, pendingKey_, pts};
+            pendingKey_ = false;
+        } else {
+            ++readbackDrops;
+        }
+        while (drainReadback(false, output)) {}
+        auto ready = receive(codec_, 0);
+        output.insert(output.end(), std::make_move_iterator(ready.begin()),
+                      std::make_move_iterator(ready.end()));
+        return output;
+    }
+    if (gpu_) {
+        av_frame_unref(frame_);
+        avcheck(av_hwframe_get_buffer(frames_, frame_, 0), "GPU encoder frame");
+        auto out = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
+        UINT slice = UINT(reinterpret_cast<uintptr_t>(frame_->data[1]));
+        convert(t, out, slice);
     } else {
         auto b = capture_->download(t);
         prepareCpu(b.data(), input_.w * 4);
@@ -557,6 +609,7 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
     frame_->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     const auto submit = clockUs();
     auto packets = send(frame_);
+    ++submittedFrames;
     prepareMs = prepareMs * .9 + double(submit - begin) / 1000 * .1;
     submitMs = submitMs * .9 + double(clockUs() - submit) / 1000 * .1;
     return packets;
@@ -575,10 +628,17 @@ std::vector<Packet> VideoEncoder::synthetic(int64_t pts, bool key) {
     frame_->pts = pts;
     frame_->duration = 1;
     frame_->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
-    return send(frame_);
+    auto output = send(frame_);
+    ++submittedFrames;
+    return output;
 }
 std::vector<Packet> VideoEncoder::flush() {
-    return send(nullptr);
+    std::vector<Packet> output;
+    if (nv12Readback_)
+        while (drainReadback(true, output)) {}
+    auto tail = send(nullptr);
+    output.insert(output.end(), std::make_move_iterator(tail.begin()), std::make_move_iterator(tail.end()));
+    return output;
 }
 AudioEncoder::~AudioEncoder() {
     av_frame_free(&frame_);

@@ -1,5 +1,6 @@
 #pragma once
 #include "engine.hpp"
+#include "toast.hpp"
 #include <d2d1.h>
 #include <dwrite.h>
 #include <map>
@@ -26,6 +27,9 @@ class UI {
     HINSTANCE instance_;
     Config cfg_;
     FrameTimer previewTimer_;
+    ToastSurface toastSurface_;
+    POINT toastPosition_{};
+    float toastDpi_ = 96;
     bool previewTimerActive_ = false;
     std::unique_ptr<Engine> engine_;
     std::unique_ptr<Hotkeys> hotkeys_;

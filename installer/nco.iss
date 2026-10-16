@@ -1,4 +1,4 @@
-#define AppVersion "0.3.0"
+#define AppVersion "0.4.0"
 [Setup]
 AppId={{8103AE92-21E5-40DC-B917-871885F0CF14}
 AppName=NCO

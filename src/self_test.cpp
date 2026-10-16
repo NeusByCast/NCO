@@ -1,4 +1,5 @@
 #include "media.hpp"
+#include "video_pipeline.hpp"
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -314,6 +315,25 @@ int mediaSelfTest() {
     try {
         av_log_set_level(AV_LOG_ERROR);
         platformSelfTest(report);
+        {
+            Config config;
+            config.encoder = "libx264";
+            config.fps = 30;
+            VideoPipeline pipeline(config, nullptr, {320, 180}, true, 250);
+            const auto begin = clockUs();
+            require(pipeline.submit(nullptr, 0, true), "First encoder mailbox rejected");
+            require(pipeline.submit(nullptr, 1, false), "Second encoder mailbox rejected");
+            require(!pipeline.submit(nullptr, 2, false), "Encoder mailbox limit was not enforced");
+            require(clockUs() - begin < 100000, "Capture waited on a slow encoder");
+            const auto track = pipeline.track();
+            auto encoded = pipeline.flush();
+            require(encoded.size() == 2 && pipeline.metrics().frames == 2,
+                    "Worker finalization lost accepted frames");
+            require(encoded[0].p->pts < encoded[1].p->pts,
+                    "Worker changed video timestamp order");
+            require(track.par->codec_type == AVMEDIA_TYPE_VIDEO, "Worker metadata missing");
+        }
+        report << "PASS bounded encoder worker: slow encode does not block submission; overflow rejected; accepted frames drain with ordered timestamps\n";
         for (const auto& format : {"mp4", "mkv", "mov", "webm"}) {
             containerTest(dir, format);
             report << "PASS " << format

@@ -63,6 +63,16 @@ void UI::smokeControls() {
                 "Numeric edit did not commit and persist");
     };
     try {
+        {
+            std::vector<Source> list(1);
+            list[0].monitor = reinterpret_cast<HMONITOR>(uintptr_t(1));
+            Source display = list[0];
+            replaceRegion(list, display, {100, 80, 420, 320});
+            replaceRegion(list, display, {40, 60, 840, 660});
+            require(list.size() == 2 && list.back().region.right == 840 &&
+                    list.back().region.left == 40, "Region reselection accumulated stale entries");
+            report << "PASS region reselection replaces the previous source entry\n";
+        }
         // Deterministic control tests; animation timing remains a separate visual check.
         cfg_.animations = false;
         cfg_.replay = false;
@@ -97,8 +107,19 @@ void UI::smokeControls() {
         stats_ = previousStats;
         draw();
         report << "PASS replay allows Recording settings while active recording remains protected\n";
-        clickControl(L"fps");
-        require(popup_.open, "Dropdown did not open");
+        {
+            auto it = std::find_if(controls_.begin(), controls_.end(), [](const auto& control) {
+                return control.id == L"fps";
+            });
+            require(it != controls_.end(), "FPS field missing");
+            int x = int((it->rect.left + it->rect.right) * dpi_ / 192);
+            int y = int((it->rect.top + it->rect.bottom) * dpi_ / 192);
+            SendMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+            require(!popup_.open, "Dropdown activated before mouse release");
+            SendMessageW(hwnd_, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+            draw();
+        }
+        require(popup_.open, "Dropdown did not open on release");
         clickControl(L"fps");
         require(!popup_.open, "Second click did not close the same dropdown");
         choose(L"fps", 0);
@@ -185,6 +206,23 @@ void UI::smokeControls() {
         require(IsIconic(hwnd_) != FALSE, "Minimize button failed");
         ShowWindow(hwnd_, SW_RESTORE);
         report << "PASS native minimize, maximize and restore controls\n";
+        cfg_.animations = true;
+        pressed_ = L"popupRegression";
+        dropdown({500, h_ - 110, 850, h_ - 70}, {L"One", L"Two", L"Three"}, 2, [](int) {});
+        popup_.start = clockUs() - 75000;
+        controls_.clear();
+        target_->BeginDraw();
+        popup();
+        check(target_->EndDraw(), "Popup reveal regression drawing");
+        for (const auto& control : controls_)
+            if (control.enabled && control.id.rfind(L"option", 0) == 0)
+                require(control.rect.bottom <= popup_.anchor.top - 5,
+                        "Upward popup did not stay attached above its field");
+        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
+            return control.id == L"option0" && !control.enabled;
+        }), "Hidden popup rows remained clickable during reveal");
+        popup_.open = popup_.closing = false;
+        report << "PASS upward dropdown anchors to field and clips unrevealed hit targets\n";
         report << "UNVERIFIED capture/audio/replay operation, folder dialogs, every hardware encoder, "
                   "notification exclusion, real DPI scaling and animation quality\n";
     } catch (const std::exception& error) {

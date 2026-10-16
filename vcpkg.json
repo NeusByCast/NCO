@@ -1,5 +1,5 @@
 {
-  "name": "nco", "version-semver": "0.3.0",
+  "name": "nco", "version-semver": "0.4.0",
   "builtin-baseline": "c52f7bd748185ef0e0daf033d9f2ddfc8a3449ea",
   "dependencies": [{"name":"ffmpeg","default-features":false,"features":["avcodec","avformat","swscale","swresample","nvcodec","amf","qsv","x264","vpx","opus"]}]
 }

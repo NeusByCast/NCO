@@ -6,6 +6,18 @@
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <winrt/Windows.Graphics.DirectX.h>
 namespace nco {
+int replaceRegion(std::vector<Source>& list, Source display, const RECT& region) {
+    if (!display.monitor || region.right - region.left < 64 || region.bottom - region.top < 64)
+        throw std::runtime_error("Choose a display and drag a region at least 64 by 64 pixels");
+    display.custom = true;
+    display.window = nullptr;
+    display.region = region;
+    display.name = L"Region · " + std::to_wstring(region.right - region.left) + L" × " +
+                   std::to_wstring(region.bottom - region.top);
+    std::erase_if(list, [](const Source& source) { return source.custom; });
+    list.push_back(std::move(display));
+    return int(list.size()) - 1;
+}
 std::vector<Source> sources(HWND exclude) {
     std::vector<Source> r;
     EnumDisplayMonitors(
@@ -308,6 +320,11 @@ bool Capture::frame(Com<ID3D11Texture2D>& texture) {
         auto f = pool_.TryGetNextFrame();
         if (!f)
             return false;
+        // Consume the newest queued frame instead of replaying an older preview.
+        while (auto newer = pool_.TryGetNextFrame()) {
+            f.Close();
+            f = std::move(newer);
+        }
         auto s = f.ContentSize();
         auto access =
             f.Surface()

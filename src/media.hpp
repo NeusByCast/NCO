@@ -56,13 +56,19 @@ class VideoEncoder {
     FitRect viewport_{};
     bool gpu_ = false;
     Capture* capture_ = nullptr;
-    Com<ID3D11Texture2D> uploadNv12_, uploadStage_;
+    Com<ID3D11Texture2D> uploadNv12_;
+    std::array<Com<ID3D11Texture2D>, 3> uploadStages_;
+    struct ReadbackJob { bool pending = false, key = false; int64_t pts = 0; };
+    std::array<ReadbackJob, 3> readbacks_{};
+    bool pendingKey_ = false;
+    bool drainReadback(bool wait, std::vector<Packet>& output);
     bool nv12Readback_ = false;
     void convert(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT slice);
 
   public:
     std::string selected, selectedAdapter;
     double prepareMs = 0, submitMs = 0;
+    uint64_t submittedFrames = 0, readbackDrops = 0;
     ~VideoEncoder();
     void open(const Config& config, Capture* capture, Size input, bool synthetic = false);
     Track track() const;

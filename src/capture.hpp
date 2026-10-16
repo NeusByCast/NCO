@@ -16,6 +16,7 @@ struct Source {
     bool custom = false;
 };
 std::vector<Source> sources(HWND exclude);
+int replaceRegion(std::vector<Source>& list, Source display, const RECT& region);
 class Capture {
     Com<ID3D11Device> device_;
     Com<ID3D11DeviceContext> context_;

@@ -1,4 +1,5 @@
 #include "platform.hpp"
+#include "toast.hpp"
 #include <ostream>
 
 namespace nco {
@@ -49,7 +50,23 @@ void releaseTestKeys() {
 }
 } // namespace
 
+void regionInputSelfTest();
 void platformSelfTest(std::ostream& report) {
+    regionInputSelfTest();
+    report << "PASS region ignores opening-button release and accepts an explicit drag\n";
+    HWND notification = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, L"STATIC", L"",
+                                        WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    require(notification != nullptr, "Cannot create notification test");
+    try {
+        ToastSurface surface;
+        for (float dpi : {96.f, 120.f, 144.f, 192.f}) {
+            surface.prepare(L"Recording started", dpi);
+            surface.frame(notification, 10, 10, 128);
+            surface.frame(notification, 12, 10, 255);
+        }
+    } catch (...) { DestroyWindow(notification); throw; }
+    DestroyWindow(notification);
+    report << "PASS cached layered notification bitmap at 100/125/150/200 percent scale (render API only)\n";
     WNDCLASSW wc{};
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpfnWndProc = testProc;

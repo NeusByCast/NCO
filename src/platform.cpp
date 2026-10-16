@@ -215,10 +215,31 @@ LRESULT CALLBACK regionProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     if (m == WM_LBUTTONUP) {
+        // Ignore the click that opened this modal selector; a drag must start here.
+        if (!s->dragging) return 0;
+        s->dragging = false;
+        RECT bounds{};
+        GetClientRect(h, &bounds);
         s->end = {short(LOWORD(l)), short(HIWORD(l))};
         s->accepted = abs(s->end.x - s->start.x) >= 64 && abs(s->end.y - s->start.y) >= 64;
-        s->done = true;
+        s->start.x = std::clamp(s->start.x, 0L, bounds.right);
+        s->start.y = std::clamp(s->start.y, 0L, bounds.bottom);
+        s->end.x = std::clamp(s->end.x, 0L, bounds.right);
+        s->end.y = std::clamp(s->end.y, 0L, bounds.bottom);
+        s->accepted = abs(s->end.x - s->start.x) >= 64 && abs(s->end.y - s->start.y) >= 64;
+        s->done = s->accepted;
         ReleaseCapture();
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    }
+    if (m == WM_CAPTURECHANGED) {
+        s->dragging = false;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    }
+    if (m == WM_CLOSE) {
+        s->done = true;
+        s->accepted = false;
         return 0;
     }
     if (m == WM_KEYDOWN && w == VK_ESCAPE) {
@@ -287,5 +308,31 @@ std::optional<RECT> selectRegion(HWND owner, HMONITOR monitor) {
         return {};
     return RECT{std::min(state.start.x, state.end.x), std::min(state.start.y, state.end.y),
                 std::max(state.start.x, state.end.x), std::max(state.start.y, state.end.y)};
+}
+void regionInputSelfTest() {
+    WNDCLASSW wc{};
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpfnWndProc = regionProc;
+    wc.lpszClassName = L"NCORegionInputTest";
+    RegisterClassW(&wc);
+    RegionState state;
+    HWND window = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"", WS_POPUP,
+                                  0, 0, 640, 480, nullptr, nullptr, wc.hInstance, &state);
+    if (!window) throw std::runtime_error("Cannot create region input test");
+    try {
+        SendMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(260, 220));
+        if (state.done || state.accepted)
+            throw std::runtime_error("Region accepted a release without a drag");
+        SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(100, 80));
+        SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(420, 320));
+        SendMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(420, 320));
+        if (!state.done || !state.accepted || state.start.x != 100 || state.start.y != 80 ||
+            state.end.x != 420 || state.end.y != 320)
+            throw std::runtime_error("Region drag did not preserve the selected area");
+    } catch (...) {
+        DestroyWindow(window);
+        throw;
+    }
+    DestroyWindow(window);
 }
 } // namespace nco

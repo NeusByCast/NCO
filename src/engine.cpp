@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "video_pipeline.hpp"
 #include <avrt.h>
 #include <cmath>
 #include <psapi.h>
@@ -28,6 +29,14 @@ void Engine::stop() {
 }
 void Engine::configure(const Config& cfg, const Source& s) {
     std::lock_guard lock(mutex_);
+    const bool sourceChanged = source_.monitor != s.monitor || source_.window != s.window ||
+        source_.custom != s.custom || memcmp(&source_.region, &s.region, sizeof(RECT)) != 0;
+    if (sourceChanged) {
+        preview_.pixels.clear();
+        preview_.size = {};
+        ++preview_.serial;
+        stats_.ready = false;
+    }
     config_ = cfg;
     source_ = s;
     ++generation_;
@@ -79,7 +88,7 @@ void Engine::run(std::stop_token token) {
         notify_(std::move(message), error);
     });
     std::unique_ptr<Capture> capture;
-    std::unique_ptr<VideoEncoder> video;
+    std::unique_ptr<VideoPipeline> video;
     std::vector<std::unique_ptr<AudioEncoder>> audio;
     AudioCapture mic, desktop;
     AudioTimeline mt, dt;
@@ -91,26 +100,21 @@ void Engine::run(std::stop_token token) {
     uint64_t gen = 0;
     int64_t epoch = 0, nextVideo = 0, nextFrame = 0, audioPts = 0, recordStart = 0, pauseStart = 0,
             removed = 0, lastPreview = 0, lastUsage = 0;
-    uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0;
+    uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0, previousReadbackDrops = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
     bool suspended = false;
     EngineStats local;
     Com<ID3D11Texture2D> texture;
+    std::vector<Packet> recordingPreroll;
+    std::function<void(std::vector<Packet>)> packets;
     auto endPipeline = [&] {
         if (video) {
-            for (auto& p : video->flush()) {
-                if (recording && !paused)
-                    disk.write(p, removed);
-                if (replay)
-                    ring.push(p);
-            }
-            for (auto& a : audio)
-                for (auto& p : a->flush()) {
-                    if (recording && !paused)
-                        disk.write(p, removed);
-                    if (replay)
-                        ring.push(p);
-                }
+            packets(video->flush());
+            for (auto& a : audio) packets(a->flush());
+            auto finalMetrics = video->metrics();
+            local.frames = finalMetrics.frames;
+            local.dropped += finalMetrics.readbackDropped - previousReadbackDrops;
+            previousReadbackDrops = finalMetrics.readbackDropped;
         }
         if (video)
             Log::get().write("Pipeline finalized frames=" + std::to_string(local.frames) +
@@ -132,8 +136,7 @@ void Engine::run(std::stop_token token) {
         }
         if (!capture)
             throw std::runtime_error("Choose an available capture source");
-        video = std::make_unique<VideoEncoder>();
-        video->open(cfg, capture.get(), capture->size());
+        video = std::make_unique<VideoPipeline>(cfg, capture.get(), capture->size());
         tracks = {video->track()};
         int count = cfg.separateTracks ? 2 : 1;
         for (int i = 0; i < count; ++i) {
@@ -156,14 +159,14 @@ void Engine::run(std::stop_token token) {
         mic.start(true, cfg.micDevice, [this](std::string e) { notify_(std::move(e), true); });
         desktop.start(false, cfg.desktopDevice,
                       [this](std::string e) { notify_(std::move(e), true); });
-        local.encoder = video->selected;
-        local.encoderAdapter = video->selectedAdapter;
+        local.encoder = video->selected();
+        local.encoderAdapter = video->adapter();
         local.gpuTexturePath = video->gpu();
-        local.gpu = video->selected.find("lib") != 0;
+        local.gpu = video->selected().find("lib") != 0;
         local.frames = local.dropped = local.freshFrames = 0;
         local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = 0;
         local.output = resolution(cfg.resolutionMode, cfg.width, cfg.height, capture->size());
-        usageFrames = videoBytes = usageBytes = 0;
+        usageFrames = videoBytes = usageBytes = previousReadbackDrops = 0;
         lastUsage = 0;
         Log::get().write("Pipeline started replay=" + std::to_string(cfg.replay) +
                          " audio_tracks=" + std::to_string(count) +
@@ -171,16 +174,28 @@ void Engine::run(std::stop_token token) {
                          " capture=" + std::to_string(capture->size().w) + "x" +
                          std::to_string(capture->size().h));
     };
-    auto packets = [&](std::vector<Packet> ps) {
+    packets = [&](std::vector<Packet> ps) {
         for (auto& p : ps) {
             if (p.stream == 0) videoBytes += p.bytes();
             if (replay)
                 ring.push(p);
             if (recording && !paused) {
                 if (gate) {
-                    if (!p.key())
+                    if (!p.key()) {
+                        if (p.stream != 0) {
+                            // Keep audio while an asynchronous first/resume keyframe is pending.
+                            if (recordingPreroll.size() >= 256)
+                                throw std::runtime_error("Timed out waiting for a recording keyframe");
+                            recordingPreroll.push_back(p);
+                        }
                         continue;
+                    }
                     gate = false;
+                    disk.write(p, removed);
+                    for (auto& audioPacket : recordingPreroll)
+                        if (audioPacket.us() >= p.us()) disk.write(audioPacket, removed);
+                    recordingPreroll.clear();
+                    continue;
                 }
                 disk.write(p, removed);
             }
@@ -285,6 +300,7 @@ void Engine::run(std::stop_token token) {
                         recording = true;
                         paused = false;
                         gate = true;
+                        recordingPreroll.clear();
                         forceKey = true;
                         removed = 0;
                         recordStart = clockUs();
@@ -296,6 +312,7 @@ void Engine::run(std::stop_token token) {
                     else {
                         removed += clockUs() - pauseStart;
                         gate = true;
+                        recordingPreroll.clear();
                         forceKey = true;
                     }
                 } else if (action == AudioRefresh && video) {
@@ -357,23 +374,22 @@ void Engine::run(std::stop_token token) {
                     if (frameIndex > nextFrame)
                         local.dropped += uint64_t(frameIndex - nextFrame);
                     nextFrame = frameIndex + 1;
-                    int64_t begin = clockUs();
-                    packets(video->encode(texture.Get(), frameIndex, forceKey));
-                    forceKey = false;
-                    local.prepareMs = video->prepareMs;
-                    local.submitMs = video->submitMs;
-                    local.encodeMs = local.encodeMs * .9 + double(clockUs() - begin) / 1000 * .1;
-                    ++local.frames;
+                    if (video->submit(texture.Get(), frameIndex, forceKey))
+                        forceKey = false;
+                    else
+                        ++local.dropped;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }
-                if (cfg.preview && visible_ && texture && now - lastPreview >= (video ? (local.encodeMs > 800.0 / cfg.fps ? 100000 : 33333) : 16667)) {
+                if (cfg.preview && visible_ && texture && now - lastPreview >= (video ? (local.encodeMs > 800.0 / cfg.fps || (local.actualFps > 0 && local.actualFps < cfg.fps * .9) ? 100000 : 33333) : 16667)) {
                     try {
                         auto p = capture->thumbnail(texture.Get());
                         if (!p.second.empty()) {
                         std::lock_guard lock(mutex_);
-                        preview_.pixels = std::move(p.second);
-                        preview_.size = p.first;
-                        ++preview_.serial;
+                        if (gen == generation_) {
+                            preview_.pixels = std::move(p.second);
+                            preview_.size = p.first;
+                            ++preview_.serial;
+                        }
                         }
                     } catch (const std::exception& e) {
                         cfg.preview = false;
@@ -384,6 +400,15 @@ void Engine::run(std::stop_token token) {
                 }
             }
             if (video) {
+                packets(video->collect());
+                auto metrics = video->metrics();
+                local.frames = metrics.frames;
+                local.dropped += metrics.readbackDropped - previousReadbackDrops;
+                previousReadbackDrops = metrics.readbackDropped;
+                local.prepareMs = metrics.prepareMs;
+                local.submitMs = metrics.submitMs;
+                local.encodeMs = metrics.encodeMs;
+                local.encodeQueue = metrics.queued;
                 for (auto& chunk : mic.drain())
                     mt.add(chunk, epoch);
                 for (auto& chunk : desktop.drain())
@@ -465,6 +490,7 @@ void Engine::run(std::stop_token token) {
                                          " prepare_ms=" + std::to_string(local.prepareMs) +
                                          " submit_ms=" + std::to_string(local.submitMs) +
                                          " encode_ms=" + std::to_string(local.encodeMs) +
+                                         " encode_queue=" + std::to_string(local.encodeQueue) +
                                          " capture_ms=" + std::to_string(local.captureMs) +
                                          " fresh_frames=" + std::to_string(local.freshFrames) +
                                          " replay_MiB=" + std::to_string(ring.bytes() / 1048576.0) +

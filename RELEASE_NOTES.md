@@ -1,16 +1,14 @@
-# NCO 0.3 preview
+# NCO 0.4 preview
 
-- Auto prefers the high-performance GPU for encoding; game/window WGC capture requests that GPU too. Hybrid full-display capture may still require cross-adapter transfer.
-- Replace NV12 render-target arrays with separately pooled textures and allocation preflight. GPU NV12 scaling/readback reduces CPU conversion and transfer size for hardware-upload paths.
-- Correct persistent DXGI cursor visibility and use capture-timestamped positions.
-- Recover Desktop Duplication after display transitions; fit changing capture sizes to fixed recording dimensions.
-- Replay no longer locks Recording settings; changing encoding/source settings restarts the replay buffer.
-- Up to 1280-wide preview; 30 FPS preview while encoding to prioritize recording, 60 FPS idle. Paint during native window moves/resizing.
-- Hide cloaked/minimized/tool windows and known input/search/start-menu system windows.
-- Remove replay-active footer; rename Advanced to Settings.
-- Manual background remux keeps original recordings and validates output; refuses overwriting existing files.
-- Full diagnostic text export with OS/GPU/driver/configuration, actual dimensions/FPS/bitrate, prepare/submit/capture timings, audio discontinuities, frame drops and bounded UTC/thread-stamped logs.
+- Region selection requires an explicit mouse drag; it ignores the release that opened the selector. Selecting a new area replaces the previous custom-region entry.
+- Controls activate on mouse release. Dropdowns reveal from the edge next to their field, constrain their viewport, and disable clipped rows during animation. Hotkey warnings have separate space below their row.
+- Window source titles refresh when browser tabs change. Source changes clear old preview pixels immediately and reject frames from previous configurations; WGC consumes the newest queued frame.
+- A separate encoder worker uses two immutable GPU mailboxes and a bounded packet queue. Capture/audio no longer directly wait for encoder submission. Keyframe preroll preserves audio while asynchronous recording/resume starts.
+- Cross-GPU NV12 readback uses three staging slots with nonblocking polling during capture. Original timestamps are retained; stop drains pending frames. Full queues drop input instead of accumulating latency.
+- Higher motion-oriented automatic bitrate defaults; AMD peak-constrained VBR with burst headroom and Balanced quality for High/Very High/Ultra. Manual bitrate remains supported.
+- Notifications render one premultiplied bitmap and animate its DWM position/alpha. No repeated font creation, window-region replacement, or paint-based redraw; placement stays fixed to the monitor chosen at notification start.
+- Diagnostics include encoder queue depth and readback rejection in drop counts.
 
-The supplied 0.2 log confirms AMD hardware upload on RX 5500M, failed texture initialization, and encode spikes above the 60 FPS budget. Improvements are implemented but game performance, driver compatibility, cursor behavior, real audio synchronization and display-transition recovery remain unverified on physical GPUs. No measured FPS improvement is claimed.
+Automated Windows tests exercise region input messages, region replacement, popup release/clip handling, cached notification rendering at four requested DPI values, and a deliberately slow software encoder worker. These are not physical-GPU benchmarks or proof of smoothness on the user's laptop. Real-game FPS, GPU readback, live capture/audio synchronization, physical DPI layouts, and notification capture exclusion still require hardware testing.
 
-See TESTING.md and the matching Actions run for executed automated checks.
+Download NCO-Setup.exe. Updates preserve user settings.

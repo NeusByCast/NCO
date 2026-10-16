@@ -58,3 +58,9 @@ This is an engineering preview, not a fully hardware-qualified release. A succes
 The two supplied diagnostic uploads were byte-identical. They show RX 5500M AMF hardware encoding with CPU frame upload, the integrated display capture adapter, invalid texture allocation (0x80070057), encode-time spikes of 47–52 ms, and cumulative dropped frames. They do not establish recorded resolution, bitrate, game GPU utilization, driver health, or audible audio corruption.
 
 New GPU texture allocation, NV12 readback, preferred-GPU capture, cursor metadata handling, resize normalization and display recovery require tests on real AMD/NVIDIA/Intel systems, particularly the user's hybrid AMD laptop. Windows CI has no suitable physical GPU and cannot verify these fixes or benchmark gameplay.
+
+## 0.4 regression scope
+
+New Windows checks: the region procedure rejects release-without-drag and accepts exact explicit-drag coordinates; region list replacement keeps a single custom source; dropdowns activate on release and unrevealed rows cannot receive clicks; upward reveal stays above its owner; cached layered-notification rendering APIs work with bitmaps prepared for 96/120/144/192 DPI; a software encoder delayed by 250 ms does not block mailbox submission, a third frame is rejected by the two-slot bound, and accepted frames finalize in timestamp order.
+
+These checks do not measure real notification animation smoothness, physical DPI layout, GPU contention, or hybrid-GPU throughput. Nonblocking NV12 staging, hardware encoder behavior, real audio synchronization, browser-window content correctness and game performance remain unverified on a suitable PC. No new user-log measurements are claimed: the new pasted attachment could not be resolved through the file reader in this session.

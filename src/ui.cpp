@@ -62,7 +62,7 @@ static void screenshot(HWND window, int page) {
 }
 int UI::run(int show) {
     cfg_ = Config::load();
-    Log::get().write("NCO 0.3.0 starting");
+    Log::get().write("NCO 0.4.0 starting");
     hardware_ = hardwareInfo();
     WNDCLASSEXW c{sizeof(c)};
     c.lpfnWndProc = proc;
@@ -348,7 +348,7 @@ void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selecte
     finishEdit(true);
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
     popup_.owner = pressed_;
-    popup_.scroll = std::max(0, selected - 3);
+    popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - 7));
     SetTimer(hwnd_, 2, 16, nullptr);
     invalidate();
 }
@@ -430,8 +430,13 @@ void UI::refresh() {
     auto old = !sources_.empty() ? sources_[size_t(sourceIndex_)] : Source{};
     sources_ = sources(hwnd_);
     sourceIndex_ = 0;
+    if (old.custom && std::any_of(sources_.begin(), sources_.end(), [&](const Source& source) {
+            return source.monitor == old.monitor;
+        }))
+        sourceIndex_ = replaceRegion(sources_, old, old.region);
     for (size_t i = 0; i < sources_.size(); ++i)
-        if (sources_[i].monitor == old.monitor && sources_[i].window == old.window)
+        if (sources_[i].monitor == old.monitor && sources_[i].window == old.window &&
+            sources_[i].custom == old.custom)
             sourceIndex_ = int(i);
     mics_ = audioDevices(true);
     speakers_ = audioDevices(false);
@@ -469,6 +474,12 @@ void UI::dashboard() {
     float left = 206, right = w_ - 28, width = right - left;
     float y = 140 - float(scroll_);
     bool locked = stats_.recording;
+    if (!sources_.empty() && sources_[size_t(sourceIndex_)].window) {
+        wchar_t title[512]{};
+        auto& selected = sources_[size_t(sourceIndex_)];
+        if (IsWindow(selected.window) && GetWindowTextW(selected.window, title, 512))
+            selected.name = std::wstring(L"Window · ") + title;
+    }
     std::wstring source =
         sources_.empty() ? L"No capture source" : sources_[size_t(sourceIndex_)].name;
     text(L"CAPTURE SOURCE", {left, y, right, y + 22}, 11, muted, true);
@@ -477,8 +488,14 @@ void UI::dashboard() {
         L"source", source, sr,
         [this, sr] {
             std::vector<std::wstring> names;
-            for (auto& s : sources_)
+            for (auto& s : sources_) {
+                if (s.window) {
+                    wchar_t title[512]{};
+                    if (GetWindowTextW(s.window, title, 512))
+                        s.name = std::wstring(L"Window · ") + title;
+                }
                 names.push_back(s.name);
+            }
             dropdown(sr, names, sourceIndex_, [this](int i) {
                 sourceIndex_ = i;
                 save();
@@ -495,12 +512,7 @@ void UI::dashboard() {
                 throw std::runtime_error("Select a display before choosing a region");
             auto r = selectRegion(hwnd_, s.monitor);
             if (r) {
-                s.custom = true;
-                s.region = *r;
-                s.name = L"Region · " + std::to_wstring(r->right - r->left) + L" × " +
-                         std::to_wstring(r->bottom - r->top);
-                sources_.push_back(s);
-                sourceIndex_ = int(sources_.size()) - 1;
+                sourceIndex_ = replaceRegion(sources_, s, *r);
                 save();
             }
         },
@@ -780,8 +792,8 @@ void UI::settings() {
                        save(false);
                    });
             if (size_t(i) < keyErrors_.size() && !keyErrors_[size_t(i)].empty()) {
-                text(keyErrors_[size_t(i)], {222, y + 51, w_ - 30, y + 75}, 10, danger);
-                y += 18;
+                text(keyErrors_[size_t(i)], {222, y + 62, w_ - 30, y + 88}, 11, danger);
+                y += 32;
             }
             y += 68;
         }
@@ -882,15 +894,21 @@ void UI::popup() {
         a.open = a.closing = false;
         return;
     }
-    int visible = std::min(7, int(a.items.size()));
-    float height = visible * 36.f + 12, width = std::max(180.f, a.anchor.right - a.anchor.left);
-    float x = std::min(a.anchor.left, w_ - width - 12), y = a.anchor.bottom + 6;
-    if (y + height > h_ - 20)
-        y = std::max(110.f, a.anchor.top - height - 6);
+    const float below = h_ - 44 - a.anchor.bottom;
+    const float above = a.anchor.top - 116;
+    const bool upward = below < 264 && above > below;
+    const float available = std::max(48.f, upward ? above : below);
+    int visible = std::max(1, std::min({7, int(a.items.size()), int((available - 12) / 36)}));
+    a.scroll = std::clamp(a.scroll, 0, std::max(0, int(a.items.size()) - visible));
+    float height = visible * 36.f + 12;
+    float width = std::min(w_ - 24, std::max(180.f, a.anchor.right - a.anchor.left));
+    float x = std::clamp(a.anchor.left, 12.f, w_ - width - 12);
+    float y = upward ? a.anchor.top - height - 6 : a.anchor.bottom + 6;
     float progress = cfg_.animations ? ease(float(clockUs() - a.start) / 150000) : 1;
     if (a.closing)
         progress = 1 - ease(float(clockUs() - a.closeStart) / 150000);
-    D2D1_RECT_F box{x, y - 6 * (1 - progress), x + width, y + height * progress};
+    D2D1_RECT_F box{x, upward ? y + height * (1 - progress) : y,
+                      x + width, upward ? y + height : y + height * progress};
     round({x + 2, box.top + 4, x + width + 2, box.bottom + 6}, D2D1::ColorF(0x0b0806), 12);
     round(box, surface, 10);
     target_->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -908,7 +926,10 @@ void UI::popup() {
                 invalidate();
             },
             i == a.selected, !a.closing);
+        controls_.back().rect.top = std::max(r.top, box.top);
         controls_.back().rect.bottom = std::min(r.bottom, box.bottom);
+        if (controls_.back().rect.bottom <= controls_.back().rect.top)
+            controls_.back().enabled = false;
     }
     target_->PopAxisAlignedClip();
 }
@@ -934,8 +955,9 @@ void UI::draw() {
     stats_ = engine_ ? engine_->stats() : EngineStats{};
     if (engine_ && cfg_.preview) {
         auto p = engine_->preview(bitmapSerial_);
-        if (p.serial != bitmapSerial_ && !p.pixels.empty()) {
-            if (!bitmap_ || int(bitmap_->GetPixelSize().width) != p.size.w ||
+        if (p.serial && p.serial != bitmapSerial_) {
+            if (p.pixels.empty()) bitmap_.Reset();
+            else if (!bitmap_ || int(bitmap_->GetPixelSize().width) != p.size.w ||
                 int(bitmap_->GetPixelSize().height) != p.size.h) {
                 bitmap_.Reset();
                 check(target_->CreateBitmap(D2D1::SizeU(p.size.w, p.size.h), p.pixels.data(),
@@ -1134,32 +1156,22 @@ void UI::toast(std::wstring msg) {
         return;
     }
     SetWindowTextW(toast_, msg.c_str());
+    toastDpi_ = dpi_;
+    toastSurface_.prepare(msg, toastDpi_);
+    MONITORINFO monitor{sizeof(monitor)};
+    GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor);
+    toastPosition_ = {monitor.rcWork.right - int(292 * toastDpi_ / 96),
+                      monitor.rcWork.top + int(12 * toastDpi_ / 96)};
     toastStart_ = clockUs();
     toastVisible_ = true;
     SetTimer(hwnd_, 2, 16, nullptr);
 }
 LRESULT CALLBACK UI::toastProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_ERASEBKGND) return 1;
     if (m == WM_PAINT) {
-        PAINTSTRUCT p;
-        HDC dc = BeginPaint(h, &p);
-        RECT r;
-        GetClientRect(h, &r);
-        HBRUSH b = CreateSolidBrush(RGB(48, 37, 29));
-        FillRect(dc, &r, b);
-        DeleteObject(b);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(238, 228, 218));
-        HFONT font =
-            CreateFontW(-MulDiv(15, int(GetDpiForWindow(h)), 96), 0, 0, 0, FW_MEDIUM, FALSE, FALSE,
-                        FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                        CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        auto old = SelectObject(dc, font);
-        wchar_t title[128];
-        GetWindowTextW(h, title, 128);
-        DrawTextW(dc, title, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, old);
-        DeleteObject(font);
-        EndPaint(h, &p);
+        PAINTSTRUCT paint;
+        BeginPaint(h, &paint);
+        EndPaint(h, &paint);
         return 0;
     }
     return DefWindowProcW(h, m, w, l);
@@ -1335,14 +1347,22 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_CAPTURECHANGED:
         scrollDragging_ = false;
         break;
-    case WM_LBUTTONUP:
-        if (scrollDragging_) {
-            scrollDragging_ = false;
-            ReleaseCapture();
+    case WM_LBUTTONUP: {
+        const bool scrolling = scrollDragging_;
+        scrollDragging_ = false;
+        const auto pressed = pressed_;
+        if (GetCapture() == h) ReleaseCapture();
+        const float x = GET_X_LPARAM(l) * 96 / dpi_, y = GET_Y_LPARAM(l) * 96 / dpi_;
+        if (!scrolling && !pressed.empty()) {
+            auto hit = std::find_if(controls_.rbegin(), controls_.rend(), [&](const auto& control) {
+                return control.enabled && inside(control.rect, x, y);
+            });
+            if (hit != controls_.rend() && hit->id == pressed) click(x, y);
         }
         pressed_.clear();
         invalidate();
         return 0;
+    }
     case WM_LBUTTONDOWN:
         SetFocus(h);
         if (maxScroll_ > 0 && GET_X_LPARAM(l) * 96 / dpi_ > w_ - 22 &&
@@ -1352,7 +1372,15 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             scrollAt(GET_Y_LPARAM(l) * 96 / dpi_);
             return 0;
         }
-        click(GET_X_LPARAM(l) * 96 / dpi_, GET_Y_LPARAM(l) * 96 / dpi_);
+        pressed_.clear();
+        for (auto it = controls_.rbegin(); it != controls_.rend(); ++it)
+            if (it->enabled && inside(it->rect, GET_X_LPARAM(l) * 96 / dpi_, GET_Y_LPARAM(l) * 96 / dpi_)) {
+                pressed_ = it->id;
+                break;
+            }
+        if (pressed_.empty()) dismissPopup();
+        else SetCapture(h);
+        invalidate();
         return 0;
     case WM_MOUSEWHEEL:
         if (popup_.open) {
@@ -1416,7 +1444,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         if (w == 1) {
-            if (!IsIconic(h) && (page_ == 6 || (!previewTimer_.get() && page_ == 0)))
+            if (!IsIconic(h) && (page_ == 6 || page_ == 0))
                 invalidate();
         } else if (w == 2) {
             int64_t now = clockUs();
@@ -1427,18 +1455,11 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
                     ShowWindow(toast_, SW_HIDE);
                     toastVisible_ = false;
                 } else {
-                    MONITORINFO mi{sizeof(mi)};
-                    GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
-                    int width = int(280 * dpi_ / 96), height = int(48 * dpi_ / 96);
-                    int x = mi.rcWork.right - width - int((12 - 12 * (1 - f)) * dpi_ / 96),
-                        y = mi.rcWork.top + int(12 * dpi_ / 96);
-                    SetLayeredWindowAttributes(toast_, 0, BYTE(255 * f), LWA_ALPHA);
-                    SetWindowPos(toast_, HWND_TOPMOST, x, y, width, height,
-                                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                                     int(18 * dpi_ / 96), int(18 * dpi_ / 96));
-                    SetWindowRgn(toast_, region, TRUE);
-                    InvalidateRect(toast_, nullptr, FALSE);
+                    const int x = toastPosition_.x + int(12 * (1 - f) * toastDpi_ / 96);
+                    const int y = toastPosition_.y;
+                    toastSurface_.frame(toast_, x, y, BYTE(255 * f));
+                    if (!IsWindowVisible(toast_))
+                        ShowWindow(toast_, SW_SHOWNOACTIVATE);
                 }
             }
             invalidate();

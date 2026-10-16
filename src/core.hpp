@@ -34,7 +34,7 @@ inline Size resolution(int mode, int w, int h, Size native) {
     return {s.w & ~1, s.h & ~1};
 }
 inline int bitrate(Size s, int fps, int quality, bool efficient) {
-    constexpr double bpp[] = {0.035, 0.055, 0.085, 0.12, 0.18};
+    constexpr double bpp[] = {0.045, 0.075, 0.14, 0.20, 0.28};
     return std::clamp(static_cast<int>(s.w * double(s.h) * fps * bpp[std::clamp(quality, 0, 4)] *
                                        (efficient ? .65 : 1.0)),
                       500000, 150000000);

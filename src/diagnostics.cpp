@@ -9,7 +9,7 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("Cannot create diagnostic report");
     out << std::fixed << std::setprecision(3);
-    out << "NCO 0.3.0 diagnostic report\r\n"
+    out << "NCO 0.4.0 diagnostic report\r\n"
            "No screen content or audio samples are included. Device identifiers, window titles and save paths are omitted.\r\n\r\n";
     RTL_OSVERSIONINFOW version{};
     version.dwOSVersionInfoSize = sizeof(version);
@@ -64,7 +64,7 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
         << " output=" << s.output.w << 'x' << s.output.h
         << " fps=" << s.actualFps << " video_Mbps=" << s.bitrateMbps
         << " frames=" << s.frames << " dropped=" << s.dropped << " fresh_capture_frames=" << s.freshFrames
-        << " encode_ms=" << s.encodeMs << " prepare_ms=" << s.prepareMs
+        << " encode_queue=" << s.encodeQueue << " encode_ms=" << s.encodeMs << " prepare_ms=" << s.prepareMs
         << " submit_ms=" << s.submitMs << " capture_ms=" << s.captureMs
         << " cpu_percent=" << s.cpuPercent << " process_MiB=" << s.workingSetMiB
         << " replay_MiB=" << s.replayBytes / 1048576.0 << "\r\n";
