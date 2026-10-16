@@ -1144,6 +1144,8 @@ void UI::shutdown() {
 }
 LRESULT CALLBACK UI::editProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) {
     auto self = reinterpret_cast<UI*>(data);
+    if (m == WM_SYSCHAR)
+        return 0;
     if (m == WM_KEYDOWN && (w == VK_RETURN || w == VK_ESCAPE || w == VK_TAB)) {
         self->finishEdit(w != VK_ESCAPE);
         return 0;
