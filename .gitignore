@@ -1,0 +1,11 @@
+/build/
+/dist/
+/output/
+/.vcpkg/
+/vcpkg_installed/
+/nco-self-test/
+*.user
+*.pdb
+/assets/nco.ico
+/assets/nco.png
+/assets/wizard*.bmp

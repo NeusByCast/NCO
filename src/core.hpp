@@ -1,0 +1,97 @@
+#pragma once
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <deque>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace nco {
+struct Size {
+    int w = 0, h = 0;
+};
+struct FitRect {
+    int x, y, w, h;
+};
+inline FitRect letterbox(Size source, Size output) {
+    const double scale = std::min(double(output.w) / source.w, double(output.h) / source.h);
+    const int w = std::max(2, int(source.w * scale) & ~1);
+    const int h = std::max(2, int(source.h * scale) & ~1);
+    return {((output.w - w) / 2) & ~1, ((output.h - h) / 2) & ~1, w, h};
+}
+inline Size resolution(int mode, int w, int h, Size native) {
+    static constexpr Size presets[] = {
+        {0, 0}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+    Size s = mode == 0 ? native : mode == 5 ? Size{w, h} : presets[std::clamp(mode, 1, 4)];
+    if (s.w < 64 || s.h < 64 || s.w > 7680 || s.h > 4320)
+        throw std::runtime_error("Resolution must be between 64x64 and 7680x4320");
+    return {s.w & ~1, s.h & ~1};
+}
+inline int bitrate(Size s, int fps, int quality, bool efficient) {
+    constexpr double bpp[] = {0.035, 0.055, 0.085, 0.12, 0.18};
+    return std::clamp(static_cast<int>(s.w * double(s.h) * fps * bpp[std::clamp(quality, 0, 4)] *
+                                       (efficient ? .65 : 1.0)),
+                      500000, 150000000);
+}
+inline bool containerCompatible(const std::string& format, const std::string& codec) {
+    return format != "webm" || codec.find("av1") != std::string::npos ||
+           codec.find("vp9") != std::string::npos;
+}
+struct Shortcut {
+    unsigned key = 0, mods = 0;
+    bool operator==(const Shortcut&) const = default;
+};
+inline bool duplicate(const std::vector<Shortcut>& keys, size_t index, Shortcut key) {
+    if (!key.key)
+        return false;
+    for (size_t i = 0; i < keys.size(); ++i)
+        if (i != index && keys[i] == key)
+            return true;
+    return false;
+}
+// Keep a decodable GOP at the front. Hard byte limit always takes priority.
+template <class T> class ReplayRing {
+    std::deque<T> packets_;
+    size_t bytes_ = 0;
+
+  public:
+    size_t cap = 256u * 1024u * 1024u;
+    int seconds = 30;
+    void clear() {
+        packets_.clear();
+        bytes_ = 0;
+    }
+    void push(T p) {
+        bytes_ += p.bytes();
+        packets_.push_back(std::move(p));
+        const int64_t cutoff = packets_.back().us() - int64_t(seconds) * 1000000;
+        while (packets_.size() > 1) {
+            auto next = std::find_if(std::next(packets_.begin()), packets_.end(),
+                                     [](const T& v) { return v.key(); });
+            if (next == packets_.end())
+                break;
+            if (next->us() > cutoff && bytes_ <= cap)
+                break;
+            while (packets_.begin() != next) {
+                bytes_ -= packets_.front().bytes();
+                packets_.pop_front();
+                next = std::find_if(packets_.begin(), packets_.end(),
+                                    [](const T& v) { return v.key(); });
+            }
+        }
+        if (bytes_ > cap)
+            clear();
+        while (!packets_.empty() && !packets_.front().key()) {
+            bytes_ -= packets_.front().bytes();
+            packets_.pop_front();
+        }
+    }
+    std::vector<T> snapshot() const {
+        return {packets_.begin(), packets_.end()};
+    }
+    size_t bytes() const {
+        return bytes_;
+    }
+};
+} // namespace nco
