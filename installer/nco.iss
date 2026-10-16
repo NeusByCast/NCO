@@ -1,4 +1,4 @@
-#define AppVersion "0.1.0"
+#define AppVersion "0.2.0"
 [Setup]
 AppId={{8103AE92-21E5-40DC-B917-871885F0CF14}
 AppName=NCO
@@ -55,14 +55,3 @@ Name: "{autodesktop}\NCO"; Filename: "{app}\NCO.exe"; Tasks: desktopicon; Workin
 
 [Run]
 Filename: "{app}\NCO.exe"; Description: "Launch NCO"; Flags: nowait postinstall skipifsilent
-
-[Code]
-procedure InitializeWizard;
-begin
-  WizardForm.Color := $00131A24;
-  WizardForm.MainPanel.Color := $001D2530;
-  WizardForm.WelcomeLabel1.Font.Color := $00DAE4EE;
-  WizardForm.WelcomeLabel2.Font.Color := $00DAE4EE;
-  WizardForm.FinishedHeadingLabel.Font.Color := $00DAE4EE;
-  WizardForm.FinishedLabel.Font.Color := $00DAE4EE;
-end;

@@ -60,12 +60,13 @@ static void screenshot(HWND window, int page) {
 }
 int UI::run(int show) {
     cfg_ = Config::load();
-    Log::get().write("NCO 0.1.0 starting");
+    Log::get().write("NCO 0.2.0 starting");
     hardware_ = hardwareInfo();
     WNDCLASSEXW c{sizeof(c)};
     c.lpfnWndProc = proc;
     c.hInstance = instance_;
     c.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    c.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     c.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(1));
     c.hIconSm = c.hIcon;
     c.lpszClassName = L"NCOWindow";
@@ -88,6 +89,9 @@ int UI::run(int show) {
                  SWP_NOZORDER);
     BOOL dark = TRUE;
     DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));
+    COLORREF borderColor = RGB(25, 19, 15);
+    DwmSetWindowAttribute(hwnd_, 34, &borderColor, sizeof(borderColor));
+    DwmSetWindowAttribute(hwnd_, 35, &borderColor, sizeof(borderColor));
     DWORD corner = 2;
     DwmSetWindowAttribute(hwnd_, 33, &corner, sizeof(corner));
     hotkeys_ = std::make_unique<Hotkeys>(hwnd_);
@@ -101,7 +105,7 @@ int UI::run(int show) {
     save();
     toast_ =
         CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-                        L"NCOToast", L"", WS_POPUP, 0, 0, 300, 50, hwnd_, nullptr, instance_, this);
+                        L"NCOToast", L"", WS_POPUP, 0, 0, 300, 50, nullptr, nullptr, instance_, this);
     exclusion_ = captureExclusionSupported() &&
                  SetWindowDisplayAffinity(toast_, WDA_EXCLUDEFROMCAPTURE) != FALSE;
     if (!exclusion_)
@@ -113,19 +117,44 @@ int UI::run(int show) {
             delete result;
         CoUninitialize();
     });
+    resources();
+    draw();
     ShowWindow(hwnd_, show);
     UpdateWindow(hwnd_);
-    SetTimer(hwnd_, 1, 125, nullptr);
+    SetTimer(hwnd_, 1, 1000, nullptr);
     if (smoke_)
         SetTimer(hwnd_, 3, 1200, nullptr);
-    MSG msg;
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    updatePreviewTimer();
+    MSG msg{};
+    bool running = true;
+    while (running) {
+        HANDLE timer = previewTimer_.get();
+        DWORD ready = MsgWaitForMultipleObjectsEx(timer ? 1 : 0, timer ? &timer : nullptr,
+                                                  INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        if (timer && ready == WAIT_OBJECT_0 && page_ == 0 && !IsIconic(hwnd_))
+            invalidate();
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                running = false;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
     if (probe_.joinable())
         probe_.join();
     return smoke_ && renderFailed_ ? 1 : int(msg.wParam);
+}
+void UI::updatePreviewTimer() {
+    const bool active = page_ == 0 && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) && !closing_;
+    if (active != previewTimerActive_) {
+        previewTimerActive_ = active;
+        if (active)
+            previewTimer_.arm(16667, 16);
+        else
+            previewTimer_.cancel();
+    }
 }
 void UI::resources() {
     if (!factory_)
@@ -150,8 +179,8 @@ void UI::resources() {
         bitmapSerial_ = 0;
     }
 }
-void UI::text(std::wstring s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool bold) {
-    int id = size + (bold ? 1000 : 0);
+void UI::text(std::wstring s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool bold, bool center) {
+    int id = size + (bold ? 1000 : 0) + (center ? 2000 : 0);
     if (!fonts_.count(id)) {
         Com<IDWriteTextFormat> f;
         check(write_->CreateTextFormat(
@@ -160,6 +189,8 @@ void UI::text(std::wstring s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool 
                   DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, float(size), L"en-US", &f),
               "UI font");
         f->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        if (center)
+            f->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         f->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         Com<IDWriteInlineObject> ellipsis;
         check(write_->CreateEllipsisTrimmingSign(f.Get(), &ellipsis), "Text trimming");
@@ -239,9 +270,8 @@ void UI::icon(const std::wstring& name, D2D1_RECT_F r, D2D1_COLOR_F color) {
         }
     }
 }
-void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::function<void()> click,
-                bool primary, bool enabled, std::wstring glyph) {
-    bool hover = id == hover_;
+D2D1_COLOR_F UI::hoverColor(const std::wstring& id, D2D1_COLOR_F base) {
+    const bool hover = id == hover_;
     auto [entry, created] = tweens_.try_emplace(L"hover/" + id, Tween{0, 0, 0});
     auto& tween = entry->second;
     if (tween.to != float(hover)) {
@@ -254,7 +284,11 @@ void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::functio
     }
     const float fraction = cfg_.animations ? ease(float(clockUs() - tween.start) / 150000) : 1;
     const float t = tween.from + (tween.to - tween.from) * fraction;
-    D2D1_COLOR_F color = blend(primary ? accent : surface, ink, .08f * t);
+    return blend(base, ink, .08f * t);
+}
+void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::function<void()> click,
+                bool primary, bool enabled, std::wstring glyph) {
+    D2D1_COLOR_F color = hoverColor(id, primary ? accent : surface);
     if (id == pressed_)
         color = blend(color, bg, .2f);
     if (!enabled)
@@ -271,17 +305,18 @@ void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::functio
 void UI::field(std::wstring id, std::wstring label, std::wstring value, float y,
                std::function<void(D2D1_RECT_F)> click, bool enabled) {
     float left = 206, right = w_ - 28, mid = left + (right - left) * .49f;
-    round({left, y, right, y + 58}, panel, 10);
+    round({left, y, right, y + 58}, hoverColor(id, panel), 10);
     text(label, {left + 16, y, mid - 12, y + 58}, 14, enabled ? ink : muted);
     D2D1_RECT_F r{mid, y + 10, right - 12, y + 48};
-    button(id, L"", r, [r, click] { click(r); }, false, enabled);
+    round(r, surface, 9);
+    controls_.push_back({{left, y, right, y + 58}, id, [r, click] { click(r); }, enabled});
     text(value, {r.left + 14, r.top, r.right - 34, r.bottom}, 13, enabled ? ink : muted, true);
     icon(L"chevron", {r.right - 30, r.top, r.right - 8, r.bottom}, muted);
 }
 void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
                 std::function<void()> click, bool enabled, std::wstring hint) {
     float left = 206, right = w_ - 28;
-    round({left, y, right, y + 58}, panel);
+    round({left, y, right, y + 58}, hoverColor(id, panel));
     text(label, {left + 16, y + 4, right - 84, y + (hint.empty() ? 54 : 30)}, 14,
          enabled ? ink : muted);
     if (!hint.empty())
@@ -308,6 +343,7 @@ void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selecte
                   std::function<void(int)> choose) {
     finishEdit(true);
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
+    popup_.owner = pressed_;
     popup_.scroll = std::max(0, selected - 3);
     SetTimer(hwnd_, 2, 16, nullptr);
     invalidate();
@@ -496,11 +532,6 @@ void UI::dashboard() {
         text(stats_.recording ? (stats_.paused ? L"PAUSED" : L"RECORDING") : L"LIVE PREVIEW",
              {left + 22, y + 12, left + 98, y + 36}, 9, stats_.recording ? accent : muted, true);
     }
-    button(L"preview", cfg_.preview ? L"Hide preview" : L"Show preview",
-           {right - 128, y + ph - 42, right - 10, y + ph - 10}, [this] {
-               cfg_.preview = !cfg_.preview;
-               save();
-           });
     y += ph + 16;
     round({left, y, right, y + 76}, panel);
     int64_t sec = stats_.durationUs / 1000000;
@@ -508,7 +539,7 @@ void UI::dashboard() {
     swprintf_s(duration, L"%02lld:%02lld:%02lld", sec / 3600, (sec / 60) % 60, sec % 60);
     text(duration, {left + 16, y + 10, left + 160, y + 42}, 24, ink, true);
     text(stats_.recording ? (stats_.paused ? L"Recording paused" : L"Recording in progress")
-                          : L"Ready when you are",
+                          : L"",
          {left + 16, y + 42, left + 190, y + 66}, 11, muted);
     button(
         L"record",
@@ -531,10 +562,6 @@ void UI::dashboard() {
         L"desktop", cfg_.desktop ? L"Sound on" : L"Sound muted",
         {left + 138, y, left + 278, y + 38}, [this] { command(4); }, cfg_.desktop, true,
         L"speaker");
-    text(stats_.encoder.empty()
-             ? L"Hardware encoders detected automatically"
-             : wide(stats_.encoder) + (stats_.gpu ? L" · GPU textures" : L" · CPU upload"),
-         {left + 296, y, right, y + 38}, 11, muted);
     maxScroll_ = std::max(0, int(y + scroll_ + 92 - h_));
     if (scroll_ > maxScroll_) {
         scroll_ = maxScroll_;
@@ -673,8 +700,19 @@ void UI::settings() {
         directory(false);
         tog(
             L"remux", L"Automatically remux recordings", cfg_.remux,
-            [this] { cfg_.remux = !cfg_.remux; }, !locked,
-            L"Safe MKV recovery file; stream-copy to target after stopping");
+            [this] { cfg_.remux = !cfg_.remux; }, !locked);
+        tog(
+            L"replayenabled", L"Enable replay buffer", cfg_.replay,
+            [this] { cfg_.replay = !cfg_.replay; }, true);
+        std::vector<std::wstring> ds = {L"15 seconds", L"30 seconds", L"60 seconds"};
+        pick(L"duration", L"Replay duration", std::to_wstring(cfg_.replaySeconds) + L" seconds", ds,
+             cfg_.replaySeconds == 15   ? 0
+             : cfg_.replaySeconds == 30 ? 1
+                                        : 2,
+             [this](int i) {
+                 cfg_.replaySeconds = i == 0 ? 15 : i == 1 ? 30 : 60;
+                 save();
+             });
     } else if (page_ == 2) {
         auto device = [&](bool mic) {
             auto& all = mic ? mics_ : speakers_;
@@ -712,37 +750,10 @@ void UI::settings() {
             [this](int n) { cfg_.desktopVolume = n; });
         tog(
             L"tracks", L"Separate microphone and desktop tracks", cfg_.separateTracks,
-            [this] { cfg_.separateTracks = !cfg_.separateTracks; }, !locked,
-            L"Track 1: microphone · Track 2: desktop audio");
+            [this] { cfg_.separateTracks = !cfg_.separateTracks; }, !locked);
         num(
             L"offset", L"Audio synchronization offset · ms", cfg_.audioOffsetMs, -500, 500,
             [this](int n) { cfg_.audioOffsetMs = n; }, !locked);
-    } else if (page_ == 3) {
-        tog(
-            L"replayenabled", L"Enable replay buffer", cfg_.replay,
-            [this] { cfg_.replay = !cfg_.replay; }, true,
-            L"Continues independently of normal recording");
-        std::vector<std::wstring> ds = {L"15 seconds", L"30 seconds", L"60 seconds"};
-        pick(L"duration", L"Replay duration", std::to_wstring(cfg_.replaySeconds) + L" seconds", ds,
-             cfg_.replaySeconds == 15   ? 0
-             : cfg_.replaySeconds == 30 ? 1
-                                        : 2,
-             [this](int i) {
-                 cfg_.replaySeconds = i == 0 ? 15 : i == 1 ? 30 : 60;
-                 save();
-             });
-        directory(true);
-        field(L"replayhotkey", L"Save replay shortcut", shortcutText(cfg_.keys[2]), y,
-              [this](D2D1_RECT_F) {
-                  page_ = 4;
-                  scroll_ = 0;
-                  invalidate();
-              });
-        y += 68;
-        text(L"Encoded packets · 256 MiB hard memory cap · keyframe-aligned clips",
-             {206, y, w_ - 28, y + 42}, 12, muted);
-        text(L"Very high bitrates may shorten the retained replay duration.",
-             {206, y + 40, w_ - 28, y + 82}, 12, muted);
     } else if (page_ == 4) {
         const wchar_t* names[] = {L"Start / stop recording", L"Pause / resume", L"Save replay",
                                   L"Microphone mute", L"Desktop audio mute"};
@@ -770,33 +781,21 @@ void UI::settings() {
             }
             y += 68;
         }
-        text(L"Single keys, function keys and modifier combinations are supported.",
-             {206, y, w_ - 28, y + 34}, 12, muted);
-    } else if (page_ == 5) {
-        round({206, y, w_ - 28, y + 58}, panel);
-        text(L"Warm brown · bronze", {222, y, w_ - 150, y + 58}, 14, ink);
-        round({w_ - 132, y + 18, w_ - 108, y + 42}, bg, 6);
-        round({w_ - 100, y + 18, w_ - 76, y + 42}, surface, 6);
-        round({w_ - 68, y + 18, w_ - 44, y + 42}, accent, 6);
-        y += 68;
-        tog(L"animations", L"Interface animations", cfg_.animations,
-            [this] { cfg_.animations = !cfg_.animations; });
-        tog(
-            L"preview", L"Live preview", cfg_.preview, [this] { cfg_.preview = !cfg_.preview; },
-            true, L"Preview pauses automatically while minimized");
-        tog(L"compact", L"Compact dashboard", cfg_.compact,
-            [this] { cfg_.compact = !cfg_.compact; });
     } else if (page_ == 6) {
         round({206, y, w_ - 28, y + 180}, panel);
         text(L"Hardware and encoding", {222, y + 12, w_ - 42, y + 42}, 16, ink, true);
         text(L"Adapters: " + hardware_, {222, y + 46, w_ - 42, y + 70}, 12, muted);
-        text(L"Encoder: " + (stats_.encoder.empty() ? L"Not active" : wide(stats_.encoder)),
+        std::wstring encoderName = L"Not recording";
+        for (const auto& e : encoders_)
+            if (e.name == stats_.encoder)
+                encoderName = e.label;
+        text(L"Encoder: " + encoderName,
              {222, y + 74, w_ - 42, y + 98}, 13, muted);
-        text(L"Frames: " + std::to_wstring(stats_.frames) + L"   Missed deadlines: " +
+        text(L"Recorded frames: " + std::to_wstring(stats_.frames) + L"   Skipped frames: " +
                  std::to_wstring(stats_.dropped),
              {222, y + 102, w_ - 42, y + 126}, 13, muted);
-        text(L"Encode average: " + std::to_wstring(stats_.encodeMs).substr(0, 5) +
-                 L" ms   Replay: " + std::to_wstring(stats_.replayBytes / 1048576) + L" MiB",
+        text(L"Average encoding time: " + std::to_wstring(stats_.encodeMs).substr(0, 5) +
+                 L" ms",
              {222, y + 130, w_ - 42, y + 154}, 13, muted);
         y += 194;
         text(L"Process CPU: " + std::to_wstring(stats_.cpuPercent).substr(0, 5) +
@@ -805,8 +804,7 @@ void UI::settings() {
         y += 44;
         tog(
             L"logging", L"Verbose diagnostics", cfg_.verbose,
-            [this] { cfg_.verbose = !cfg_.verbose; }, true,
-            L"One bounded 1 MiB log; no captured media is logged");
+            [this] { cfg_.verbose = !cfg_.verbose; }, true);
         field(L"openlog", L"Diagnostic file", L"Open diagnostic log", y, [this](D2D1_RECT_F) {
             ShellExecuteW(hwnd_, L"open", (appDir() / L"diagnostic.log").c_str(), nullptr, nullptr,
                           SW_SHOWNORMAL);
@@ -832,11 +830,7 @@ void UI::settings() {
                 save();
             },
             !locked);
-        text(L"Capture: Windows Graphics Capture; Desktop Duplication fallback for displays.",
-             {206, y, w_ - 28, y + 42}, 12, muted);
-        text(exclusion_ ? L"Capture-excluded notifications are available."
-                        : L"Capture exclusion unavailable; external notifications are disabled.",
-             {206, y + 44, w_ - 28, y + 86}, 12, muted);
+
     }
     // Clamp after layout: avoids blank scroll regions after changing a section.
     maxScroll_ = std::max(0, int(y + scroll_ + 90 - h_));
@@ -896,6 +890,7 @@ void UI::dismissPopup() {
     invalidate();
 }
 void UI::draw() {
+    updatePreviewTimer();
     resources();
     RECT client;
     GetClientRect(hwnd_, &client);
@@ -903,15 +898,19 @@ void UI::draw() {
     h_ = client.bottom * 96 / dpi_;
     stats_ = engine_ ? engine_->stats() : EngineStats{};
     if (engine_ && cfg_.preview) {
-        auto p = engine_->preview();
+        auto p = engine_->preview(bitmapSerial_);
         if (p.serial != bitmapSerial_ && !p.pixels.empty()) {
-            bitmap_.Reset();
-            check(target_->CreateBitmap(D2D1::SizeU(p.size.w, p.size.h), p.pixels.data(),
-                                        UINT32(p.size.w * 4),
-                                        D2D1::BitmapProperties(D2D1::PixelFormat(
-                                            DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)),
-                                        &bitmap_),
-                  "Preview bitmap");
+            if (!bitmap_ || int(bitmap_->GetPixelSize().width) != p.size.w ||
+                int(bitmap_->GetPixelSize().height) != p.size.h) {
+                bitmap_.Reset();
+                check(target_->CreateBitmap(D2D1::SizeU(p.size.w, p.size.h), p.pixels.data(),
+                                            UINT32(p.size.w * 4),
+                                            D2D1::BitmapProperties(D2D1::PixelFormat(
+                                                DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)),
+                                            &bitmap_), "Preview bitmap");
+            } else
+                check(bitmap_->CopyFromMemory(nullptr, p.pixels.data(), UINT32(p.size.w * 4)),
+                      "Update preview bitmap");
             bitmapSerial_ = p.serial;
         }
     }
@@ -919,12 +918,13 @@ void UI::draw() {
     target_->Clear(bg);
     controls_.clear();
     round({0, 0, 178, h_}, D2D1::ColorF(0x211913), 0);
-    text(L"NCO", {24, 16, 150, 60}, 28, ink, true);
-    text(L"CAPTURE, REFINED.", {25, 62, 168, 86}, 9, muted, true);
+    text(L"NCO", {12, 20, 166, 64}, 28, ink, true, true);
     const wchar_t* titles[] = {L"Dashboard", L"Recording",  L"Audio",   L"Replay",
                                L"Hotkeys",   L"Appearance", L"Advanced"};
-    for (int i = 0; i < 7; ++i) {
-        float y = 112 + i * 48.f;
+    const int pages[] = {0, 1, 2, 4, 6};
+    for (int n = 0; n < 5; ++n) {
+        const int i = pages[n];
+        float y = 100 + n * 48.f;
         if (page_ == i)
             round({12, y, 166, y + 40}, surface, 8);
         button(
@@ -944,8 +944,6 @@ void UI::draw() {
             : i == 3 ? L"replay"
                      : L"settings");
     }
-    text(L"NATIVE WINDOWS RECORDER", {20, h_ - 44, 170, h_ - 22}, 8, muted);
-    text(L"NCO / " + std::wstring(titles[page_]), {206, 12, w_ - 160, 48}, 11, muted);
     button(
         L"min", L"", {w_ - 138, 8, w_ - 96, 42}, [this] { ShowWindow(hwnd_, SW_MINIMIZE); }, false,
         true, L"min");
@@ -957,9 +955,6 @@ void UI::draw() {
         L"close", L"", {w_ - 50, 8, w_ - 8, 42}, [this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); },
         false, true, L"close");
     text(titles[page_], {206, 62, w_ - 28, 100}, 27, ink, true);
-    text(page_ == 0 ? L"Your screen. Your sound. Every moment."
-                    : L"Changes are saved automatically.",
-         {206, 102, w_ - 28, 128}, 12, muted);
     float fade = cfg_.animations ? ease(float(clockUs() - navigationStart_) / 150000) : 1;
     target_->PushLayer(D2D1::LayerParameters({180, 136, w_, h_ - 38}, nullptr,
                                              D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
@@ -979,7 +974,7 @@ void UI::draw() {
     round({180, h_ - 36, w_, h_}, bg, 0);
     text(message_.empty() ? (stats_.recording ? L"● Recording"
                              : stats_.replay  ? L"● Replay buffer active"
-                                              : L"● Ready")
+                                              : L"")
                           : message_,
          {206, h_ - 34, w_ - 26, h_ - 3}, 11, message_.empty() ? muted : danger);
     popup();
@@ -1016,6 +1011,10 @@ void UI::click(float x, float y) {
                           i->id == L"close";
             if (!popup_.open && !chrome && (y < 136 || y > h_ - 38))
                 continue;
+            if (popup_.open && !popup_.closing && popup_.owner == i->id) {
+                dismissPopup();
+                return;
+            }
             pressed_ = i->id;
             if (popup_.open && i->id.rfind(L"option", 0) != 0)
                 dismissPopup();
@@ -1220,17 +1219,19 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     case WM_SIZE:
+        updatePreviewTimer();
         if (engine_)
             engine_->visible(w != SIZE_MINIMIZED);
         if (target_ && w != SIZE_MINIMIZED)
             target_->Resize(D2D1::SizeU(LOWORD(l), HIWORD(l)));
         if (w == SIZE_MINIMIZED) {
+            popup_.open = popup_.closing = false;
             KillTimer(h, 1);
             // A toast must finish its lifetime even when the main window minimizes.
             if (!toastVisible_)
                 KillTimer(h, 2);
         } else {
-            SetTimer(h, 1, 125, nullptr);
+            SetTimer(h, 1, 1000, nullptr);
             invalidate();
         }
         return 0;
@@ -1259,7 +1260,15 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_ERASEBKGND:
         return 1;
+    case WM_MOUSELEAVE:
+        hover_.clear();
+        hoverStart_ = clockUs();
+        SetTimer(h, 2, 16, nullptr);
+        invalidate();
+        return 0;
     case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0};
+        TrackMouseEvent(&track);
         float x = GET_X_LPARAM(l) * 96 / dpi_, y = GET_Y_LPARAM(l) * 96 / dpi_;
         if (scrollDragging_) {
             scrollAt(y);
@@ -1312,8 +1321,17 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         invalidate();
         return 0;
     case WM_KEYDOWN:
-    case WM_SYSKEYDOWN:
         key(w);
+        return 0;
+    case WM_SYSKEYDOWN:
+        if (hotkeyIndex_ >= 0) {
+            key(w);
+            return 0;
+        }
+        if (w == VK_F4)
+            break;
+        return 0;
+    case WM_SYSCHAR:
         return 0;
     case WM_HOTKEY:
         command(int(w) - 100);
@@ -1332,14 +1350,15 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_TIMER:
         if (w == 3) {
             screenshot(h, smokeStep_);
-            if (++smokeStep_ >= 8) {
+            if (++smokeStep_ >= 6) {
                 KillTimer(h, 3);
                 smokeControls();
                 shutdown();
             } else {
-                page_ = smokeStep_ == 7 ? 0 : smokeStep_;
+                const int smokePages[] = {0, 1, 2, 4, 6, 0};
+                page_ = smokePages[smokeStep_];
                 scroll_ = 0;
-                if (smokeStep_ == 7)
+                if (smokeStep_ == 5)
                     SetWindowPos(h, nullptr, 0, 0, int(920 * dpi_ / 96), int(540 * dpi_ / 96),
                                  SWP_NOMOVE | SWP_NOZORDER);
                 invalidate();
@@ -1347,22 +1366,22 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         if (w == 1) {
-            if (!IsIconic(h))
+            if (!IsIconic(h) && (page_ == 6 || (!previewTimer_.get() && page_ == 0)))
                 invalidate();
         } else if (w == 2) {
             int64_t now = clockUs();
             if (toastVisible_ && toast_) {
                 float t = float(now - toastStart_) / 1000;
-                float f = t < 120 ? ease(t / 120) : t > 380 ? 1 - ease((t - 380) / 120) : 1;
-                if (t >= 500) {
+                float f = t < 150 ? ease(t / 150) : t > 850 ? 1 - ease((t - 850) / 150) : 1;
+                if (t >= 1000) {
                     ShowWindow(toast_, SW_HIDE);
                     toastVisible_ = false;
                 } else {
                     MONITORINFO mi{sizeof(mi)};
                     GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
                     int width = int(280 * dpi_ / 96), height = int(48 * dpi_ / 96);
-                    int x = mi.rcWork.right - width - int((20 - 20 * (1 - f)) * dpi_ / 96),
-                        y = mi.rcWork.top + int(22 * dpi_ / 96);
+                    int x = mi.rcWork.right - width - int((12 - 12 * (1 - f)) * dpi_ / 96),
+                        y = mi.rcWork.top + int(12 * dpi_ / 96);
                     SetLayeredWindowAttributes(toast_, 0, BYTE(255 * f), LWA_ALPHA);
                     SetWindowPos(toast_, HWND_TOPMOST, x, y, width, height,
                                  SWP_NOACTIVATE | SWP_SHOWWINDOW);

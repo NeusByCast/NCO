@@ -10,6 +10,26 @@
 #include <windows.h>
 #include <wrl/client.h>
 namespace nco {
+class FrameTimer {
+    HANDLE handle_ = nullptr;
+  public:
+    FrameTimer() {
+        handle_ = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002, TIMER_ALL_ACCESS);
+        if (!handle_)
+            handle_ = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    }
+    ~FrameTimer() { if (handle_) CloseHandle(handle_); }
+    FrameTimer(const FrameTimer&) = delete;
+    FrameTimer& operator=(const FrameTimer&) = delete;
+    HANDLE get() const { return handle_; }
+    void arm(int64_t us, LONG period = 0) {
+        LARGE_INTEGER due{};
+        due.QuadPart = -std::max<int64_t>(1, us) * 10;
+        if (handle_)
+            SetWaitableTimer(handle_, &due, period, nullptr, nullptr, FALSE);
+    }
+    void cancel() { if (handle_) CancelWaitableTimer(handle_); }
+};
 template <class T> using Com = Microsoft::WRL::ComPtr<T>;
 inline void check(HRESULT hr, const char* what) {
     if (FAILED(hr))

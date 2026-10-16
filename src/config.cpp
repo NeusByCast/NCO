@@ -65,6 +65,10 @@ Config Config::load() {
         c.keys[i].key = num(k.c_str(), int(c.keys[i].key), 0, 255);
         c.keys[i].mods = num(m.c_str(), 0, 0, 15);
     }
+    c.preview = true;
+    c.animations = true;
+    c.compact = false;
+    c.replayDirectory = c.directory;
     Log::get().verbose(c.verbose);
     return c;
 }

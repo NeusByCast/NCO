@@ -1,9 +1,16 @@
-# NCO 0.1 engineering preview
+# NCO 0.2 preview
 
-Download **NCO-Setup.exe** to install the native x64 Windows application. It installs to Program Files by default, supports a custom destination, Start Menu/optional desktop shortcuts, Installed Apps, and a normal uninstaller. Settings live in `%LOCALAPPDATA%\NCO` and are preserved on update and uninstall.
+Download NCO-Setup.exe. Updating preserves saved recording/audio/hotkey settings.
 
-Native C++20 brown Direct2D UI; WGC and Desktop Duplication capture; actual FFmpeg library encoders and containers; WASAPI mic/desktop audio; packet replay; global hotkeys; immediate settings persistence; bounded logging; Inno Setup installer.
+- Readable native installer pages with brown branding artwork.
+- Five cleaner pages; Replay settings live in Recording, with replay clips saved beside recordings using Replay_ names. Appearance controls, slogans, breadcrumb, preview toggle and instructional clutter removed.
+- Whole-row hover highlights; repeated dropdown click closes it; Alt-key system sound suppressed; dark initial window background/border.
+- Preview targets 60 FPS via asynchronous readback and an independent high-resolution UI timer. Rendering stops when minimized.
+- Display capture defaults to Desktop Duplication to avoid the yellow WGC indicator. Window capture remains subject to Windows capture-border permissions.
+- One-second, top-right recording/replay notifications.
+- AMD adapter-aware encoder selection, hardware-only Media Foundation alternatives, and detailed initialization/fallback logging.
+- Audio packet continuity across small timestamp jitter; low-level noise suppression and DC removal.
 
-This release is **not yet fully validated on real recording hardware**. CI only runs compilation, synthetic-media tests, and installer/UI-launch smoke tests. Read TESTING.md for unverified capture, audio, GPU, replay, DPI, performance checks, and known limits. No lag-free or benchmark claims are made.
+Hardware encoding, actual 60 FPS preview/recording, endpoint buzz, notification exclusion, DPI and long-run performance still require real-PC retesting. The supplied clip showed approximately 35 recorded FPS and very quiet audio noise; no claim of a measured performance fix on that machine is made. See TESTING.md for limits and automated checks.
 
-Source and build scripts are in this repository. The corresponding-source asset contains source archives for the statically linked libraries. The installer does not bundle or invoke the FFmpeg command-line application.
+Source and build scripts, including statically linked dependency source, are included in the corresponding-source release asset.

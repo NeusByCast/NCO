@@ -1,6 +1,8 @@
 #include "media.hpp"
 #include <cmath>
 #include <fstream>
+#include <cstdarg>
+#include <cstdio>
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
@@ -13,6 +15,42 @@ void avcheck(int n, const char* w) {
         av_strerror(n, b, sizeof(b));
         throw std::runtime_error(std::string(w) + ": " + b);
     }
+}
+static void mediaLog(void*, int level, const char* format, va_list args) {
+    if (level > AV_LOG_WARNING)
+        return;
+    char buffer[2048]{};
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    std::string line(buffer);
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+        line.pop_back();
+    if (!line.empty())
+        Log::get().write("Media: " + line);
+}
+static std::vector<int> amdAdapters() {
+    std::vector<int> indices;
+    Com<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+        return indices;
+    for (UINT i = 0;; ++i) {
+        Com<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND)
+            break;
+        if (!adapter)
+            continue;
+        DXGI_ADAPTER_DESC1 desc{};
+        if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.VendorId == 0x1002 &&
+            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+            indices.push_back(int(i));
+    }
+    return indices;
+}
+static AVBufferRef* adapterDevice(int index) {
+    AVBufferRef* device = nullptr;
+    const std::string id = std::to_string(index);
+    avcheck(av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_D3D11VA, id.c_str(), nullptr, 0),
+            "Open encoder GPU adapter");
+    return device;
 }
 static Track trackOf(AVCodecContext* c) {
     auto p = avcodec_parameters_alloc();
@@ -78,8 +116,13 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         av_opt_set_int(c->priv_data, "rc-lookahead", 0, 0);
     }
     if (name.find("amf") != std::string::npos) {
-        av_opt_set(c->priv_data, "usage", "ultralowlatency", 0);
+        av_opt_set(c->priv_data, "usage", "lowlatency", 0);
+        av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
         av_opt_set(c->priv_data, "quality", "speed", 0);
+    }
+    if (name.find("_mf") != std::string::npos) {
+        av_opt_set_int(c->priv_data, "hw_encoding", 1, 0);
+        av_opt_set(c->priv_data, "scenario", "display_remoting", 0);
     }
     if (name.find("qsv") != std::string::npos)
         av_opt_set(c->priv_data, "preset", "veryfast", 0);
@@ -91,7 +134,9 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     }
 }
 std::vector<EncoderChoice> probeEncoders() {
-    av_log_set_level(AV_LOG_ERROR);
+    av_log_set_callback(mediaLog);
+    av_log_set_level(AV_LOG_WARNING);
+    Log::get().write("FFmpeg codec version: " + std::to_string(avcodec_version()));
     std::vector<EncoderChoice> out;
     const EncoderChoice list[] = {{"h264_nvenc", L"NVIDIA · H.264", true},
                                   {"hevc_nvenc", L"NVIDIA · HEVC", true},
@@ -102,22 +147,46 @@ std::vector<EncoderChoice> probeEncoders() {
                                   {"h264_qsv", L"Intel · H.264", true},
                                   {"hevc_qsv", L"Intel · HEVC", true},
                                   {"av1_qsv", L"Intel · AV1", true},
-                                  {"libx264", L"Software · H.264", false},
+                                  {"h264_mf", L"Windows GPU · H.264", true},
+                                  {"hevc_mf", L"Windows GPU · HEVC", true},
+                                  {"libx264", L"CPU · H.264", false},
                                   {"libvpx-vp9", L"Software · VP9 (WebM)", false}};
     Config cfg;
     cfg.fps = 30;
     for (auto& item : list) {
         auto codec = avcodec_find_encoder_by_name(item.name.c_str());
-        if (!codec)
+        if (!codec) {
+            Log::get().write("Encoder not compiled: " + item.name);
             continue;
-        auto c = avcodec_alloc_context3(codec);
-        if (!c)
-            continue;
-        configureVideo(c, item.name, cfg, {640, 360},
-                       item.gpu ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P);
-        if (avcodec_open2(c, codec, nullptr) >= 0)
-            out.push_back(item);
-        avcodec_free_context(&c);
+        }
+        std::vector<int> adapters = {-1};
+        if (item.name.find("amf") != std::string::npos) {
+            auto amd = amdAdapters();
+            adapters.insert(adapters.begin(), amd.begin(), amd.end());
+        }
+        for (int index : adapters) {
+            auto c = avcodec_alloc_context3(codec);
+            if (!c)
+                continue;
+            bool supported = false;
+            try {
+                configureVideo(c, item.name, cfg, {640, 360},
+                               item.gpu ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P);
+                if (index >= 0)
+                    c->hw_device_ctx = adapterDevice(index);
+                avcheck(avcodec_open2(c, codec, nullptr), "Probe encoder");
+                supported = true;
+                Log::get().write("Encoder available: " + item.name + " adapter=" + std::to_string(index));
+            } catch (const std::exception& e) {
+                Log::get().write("Encoder probe failed: " + item.name + " adapter=" +
+                                 std::to_string(index) + " " + e.what());
+            }
+            avcodec_free_context(&c);
+            if (supported) {
+                out.push_back(item);
+                break;
+            }
+        }
     }
     return out;
 }
@@ -139,7 +208,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
     else if (cfg.format == "webm")
         names = {"av1_nvenc", "av1_amf", "av1_qsv", "libvpx-vp9"};
     else
-        names = {"h264_nvenc", "h264_amf", "h264_qsv", "libx264"};
+        names = {"h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"};
     std::string failures;
     for (auto& name : names) {
         if (!containerCompatible(cfg.format, name))
@@ -149,13 +218,22 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
             continue;
         bool canGpu =
             !synthetic && capture &&
-            (name.find("nvenc") != std::string::npos || name.find("amf") != std::string::npos);
-        for (int attempt = canGpu ? 0 : 1; attempt < 2; ++attempt) {
+            (name.find("nvenc") != std::string::npos || name.find("amf") != std::string::npos ||
+             name.find("_mf") != std::string::npos);
+        std::vector<int> attempts;
+        if (canGpu)
+            attempts.push_back(-2); // capture device, zero readback
+        if (name.find("amf") != std::string::npos) {
+            auto amd = amdAdapters();
+            attempts.insert(attempts.end(), amd.begin(), amd.end());
+        }
+        attempts.push_back(-1); // library-selected device / software encoder
+        for (int attempt : attempts) {
             try {
                 codec_ = avcodec_alloc_context3(codec);
                 if (!codec_)
                     throw std::bad_alloc();
-                gpu_ = attempt == 0;
+                gpu_ = attempt == -2;
                 AVPixelFormat fmt =
                     gpu_ ? AV_PIX_FMT_D3D11
                          : (name.find("lib") == 0 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NV12);
@@ -202,6 +280,12 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     check(vd_->CreateVideoProcessor(enumerator_.Get(), 0, &processor_),
                           "GPU video processor");
                 }
+                if (attempt >= 0) {
+                    device_ = adapterDevice(attempt);
+                    codec_->hw_device_ctx = av_buffer_ref(device_);
+                    if (!codec_->hw_device_ctx)
+                        throw std::bad_alloc();
+                }
                 avcheck(avcodec_open2(codec_, codec, nullptr), "Open video encoder");
                 frame_ = av_frame_alloc();
                 if (!frame_)
@@ -223,10 +307,13 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 }
                 selected = name;
                 Log::get().write("Encoder: " + name +
-                                 (gpu_ ? " GPU texture path" : " CPU upload path"));
+                                 (gpu_ ? " GPU texture path" : name.find("lib") == 0 ? " software encoding" : " hardware encoding with frame upload") +
+                                 " adapter=" + std::to_string(attempt));
                 return;
             } catch (const std::exception& e) {
                 failures += name + ": " + e.what() + "; ";
+                Log::get().write("Encoder initialization failed: " + name + " adapter=" +
+                                 std::to_string(attempt) + " " + e.what());
                 av_frame_free(&frame_);
                 avcodec_free_context(&codec_);
                 av_buffer_unref(&frames_);
@@ -246,8 +333,17 @@ Track VideoEncoder::track() const {
     return trackOf(codec_);
 }
 std::vector<Packet> VideoEncoder::send(AVFrame* f) {
-    avcheck(avcodec_send_frame(codec_, f), "Submit video");
-    return receive(codec_, 0);
+    auto output = receive(codec_, 0);
+    int sent = avcodec_send_frame(codec_, f);
+    if (sent == AVERROR(EAGAIN)) {
+        auto pending = receive(codec_, 0);
+        output.insert(output.end(), pending.begin(), pending.end());
+        sent = avcodec_send_frame(codec_, f);
+    }
+    avcheck(sent, "Submit video");
+    auto pending = receive(codec_, 0);
+    output.insert(output.end(), pending.begin(), pending.end());
+    return output;
 }
 void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
     avcheck(av_frame_make_writable(frame_), "Writable video frame");

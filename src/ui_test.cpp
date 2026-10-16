@@ -69,9 +69,15 @@ void UI::smokeControls() {
         page(0);
         toggle(L"mic", &Config::mic);
         toggle(L"desktop", &Config::desktop);
-        toggle(L"preview", &Config::preview);
+        require(std::none_of(controls_.begin(), controls_.end(), [](const auto& c) {
+            return c.id == L"preview" || c.id == L"fps" || c.id == L"nav3" || c.id == L"nav5";
+        }), "Removed dashboard controls or tabs are still visible");
         clickControl(L"nav1");
         require(page_ == 1, "Navigation button did not change page");
+        clickControl(L"fps");
+        require(popup_.open, "Dropdown did not open");
+        clickControl(L"fps");
+        require(!popup_.open, "Second click did not close the same dropdown");
         choose(L"fps", 0);
         require(cfg_.fps == 15, "FPS dropdown did not commit");
         choose(L"quality", 4);
@@ -86,7 +92,7 @@ void UI::smokeControls() {
         require(cfg_.format == "webm", "Container dropdown did not commit");
         choose(L"encoder", 0);
         require(cfg_.encoder == "auto", "Auto encoder selection did not commit");
-        report << "PASS dashboard mute/preview, navigation, recording dropdowns, custom numeric "
+        report << "PASS clean dashboard, mute controls, dropdown re-click dismissal, navigation, recording dropdowns, custom numeric "
                   "fields and remux persistence through real control handlers\n";
         page(2);
         choose(L"micdevice", 0);
@@ -99,7 +105,7 @@ void UI::smokeControls() {
         number(L"micgain", 125, &Config::micGain);
         number(L"offset", 35, &Config::audioOffsetMs);
         clickControl(L"refreshdevices");
-        page(3);
+        page(1);
         for (int i = 0; i < 3; ++i) {
             choose(L"duration", i);
             require(cfg_.replaySeconds == (i == 0 ? 15 : i == 1 ? 30 : 60),
@@ -118,15 +124,21 @@ void UI::smokeControls() {
         draw();
         clickControl(L"clear1");
         require(!cfg_.keys[1].key, "Clear shortcut button failed");
-        page(5);
-        toggle(L"compact", &Config::compact);
-        toggle(L"preview", &Config::preview);
-        toggle(L"animations", &Config::animations);
         page(6);
         toggle(L"logging", &Config::verbose);
         choose(L"captureApi", 2);
         require(cfg_.captureBackend == 2, "Capture compatibility dropdown failed");
-        report << "PASS interactive shortcut capture/clear/duplicates and appearance/advanced controls\n";
+        report << "PASS interactive shortcut capture/clear/duplicates and advanced controls\n";
+        if (exclusion_) {
+            toast(L"Recording started");
+            toastStart_ = clockUs() - 500000;
+            SendMessageW(hwnd_, WM_TIMER, 2, 0);
+            require(toastVisible_, "Toast expired before one second");
+            toastStart_ = clockUs() - 1100000;
+            SendMessageW(hwnd_, WM_TIMER, 2, 0);
+            require(!toastVisible_, "Toast did not expire after one second");
+            report << "PASS one-second notification lifetime boundaries\n";
+        }
         page(0);
         clickControl(L"max");
         require(IsZoomed(hwnd_) != FALSE, "Maximize button failed");

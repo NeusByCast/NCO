@@ -4,16 +4,25 @@
 #include <psapi.h>
 namespace nco {
 Engine::Engine(std::function<void(std::string, bool)> notify) : notify_(std::move(notify)) {
-    thread_ = std::jthread([this](std::stop_token token) { run(token); });
+    wake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!wake_)
+        throw std::runtime_error("Cannot create recording wake event");
+    try {
+        thread_ = std::jthread([this](std::stop_token token) { run(token); });
+    } catch (...) {
+        CloseHandle(wake_);
+        throw;
+    }
 }
 Engine::~Engine() {
     stop();
+    CloseHandle(wake_);
 }
 void Engine::stop() {
     std::lock_guard stopLock(stopMutex_);
     if (thread_.joinable()) {
         thread_.request_stop();
-        cv_.notify_one();
+        SetEvent(wake_);
         thread_.join();
     }
 }
@@ -22,37 +31,38 @@ void Engine::configure(const Config& cfg, const Source& s) {
     config_ = cfg;
     source_ = s;
     ++generation_;
-    cv_.notify_one();
+    SetEvent(wake_);
 }
 void Engine::recording() {
     std::lock_guard lock(mutex_);
     actions_.push_back(Record);
-    cv_.notify_one();
+    SetEvent(wake_);
 }
 void Engine::pause() {
     std::lock_guard lock(mutex_);
     actions_.push_back(Pause);
-    cv_.notify_one();
+    SetEvent(wake_);
 }
 void Engine::replay() {
     std::lock_guard lock(mutex_);
     actions_.push_back(ReplaySave);
-    cv_.notify_one();
+    SetEvent(wake_);
 }
 void Engine::refreshAudio() {
     std::lock_guard lock(mutex_);
     actions_.push_back(AudioRefresh);
-    cv_.notify_one();
+    SetEvent(wake_);
 }
 EngineStats Engine::stats() {
     std::lock_guard lock(mutex_);
     return stats_;
 }
-Preview Engine::preview() {
+Preview Engine::preview(uint64_t seen) {
     std::lock_guard lock(mutex_);
-    return preview_;
+    return seen == preview_.serial ? Preview{} : preview_;
 }
 void Engine::run(std::stop_token token) {
+    FrameTimer frameTimer;
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     DWORD task = 0;
     HANDLE mm = AvSetMmThreadCharacteristicsW(L"Playback", &task);
@@ -66,6 +76,7 @@ void Engine::run(std::stop_token token) {
     std::vector<std::unique_ptr<AudioEncoder>> audio;
     AudioCapture mic, desktop;
     AudioTimeline mt, dt;
+    AudioConditioner micFilter, desktopFilter;
     std::vector<Track> tracks;
     ReplayRing<Packet> ring;
     Config cfg;
@@ -129,6 +140,8 @@ void Engine::run(std::stop_token token) {
         audioPts = 0;
         mt = AudioTimeline();
         dt = AudioTimeline();
+        micFilter.reset();
+        desktopFilter.reset();
         ring.clear();
         mic.start(true, cfg.micDevice, [this](std::string e) { notify_(std::move(e), true); });
         desktop.start(false, cfg.desktopDevice,
@@ -209,6 +222,8 @@ void Engine::run(std::stop_token token) {
                                   [this](std::string e) { notify_(std::move(e), true); });
                     mt = AudioTimeline();
                     dt = AudioTimeline();
+                    micFilter.reset();
+                    desktopFilter.reset();
                 }
                 cfg = current;
                 gen = newGen;
@@ -259,9 +274,11 @@ void Engine::run(std::stop_token token) {
                                   [this](std::string e) { notify_(std::move(e), true); });
                     mt = AudioTimeline();
                     dt = AudioTimeline();
+                    micFilter.reset();
+                    desktopFilter.reset();
                 } else if (action == ReplaySave) {
                     if (!replay) {
-                        notify_("Enable replay buffering in Replay settings first", true);
+                        notify_("Enable replay in Recording settings first", true);
                         continue;
                     }
                     auto clip = ring.snapshot();
@@ -270,7 +287,7 @@ void Engine::run(std::stop_token token) {
                         continue;
                     }
                     try {
-                        disk.replay(uniquePath(cfg.replayDirectory, "Replay_", cfg.format), tracks,
+                        disk.replay(uniquePath(cfg.directory, "Replay_", cfg.format), tracks,
                                     std::move(clip));
                     } catch (const std::exception& e) {
                         notify_(std::string("Replay save declined: ") + e.what(), true);
@@ -313,13 +330,15 @@ void Engine::run(std::stop_token token) {
                     ++local.frames;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }
-                if (cfg.preview && visible_ && texture && now - lastPreview >= 125000) {
+                if (cfg.preview && visible_ && texture && now - lastPreview >= 16667) {
                     try {
                         auto p = capture->thumbnail(texture.Get());
+                        if (!p.second.empty()) {
                         std::lock_guard lock(mutex_);
                         preview_.pixels = std::move(p.second);
                         preview_.size = p.first;
                         ++preview_.serial;
+                        }
                     } catch (const std::exception& e) {
                         cfg.preview = false;
                         Log::get().write(std::string("Preview disabled: ") + e.what());
@@ -342,6 +361,14 @@ void Engine::run(std::stop_token token) {
                     mt.read(audioPts, frame, cfg.mic ? cfg.micVolume * cfg.micGain / 10000.f : 0,
                             m);
                     dt.read(audioPts, frame, cfg.desktop ? cfg.desktopVolume / 100.f : 0, d);
+                    if (cfg.mic)
+                        micFilter.process(m);
+                    else
+                        micFilter.reset();
+                    if (cfg.desktop)
+                        desktopFilter.process(d);
+                    else
+                        desktopFilter.reset();
                     int64_t pts = audioPts + int64_t(cfg.audioOffsetMs) * 48;
                     if (cfg.separateTracks) {
                         auto limit = [](float x) {
@@ -387,13 +414,15 @@ void Engine::run(std::stop_token token) {
                 if (GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory)))
                     local.workingSetMiB = double(memory.WorkingSetSize) / 1048576;
                 lastUsage = now;
-                if (cfg.verbose)
+                if (video && (cfg.verbose || local.dropped))
                     Log::get().write("Frames=" + std::to_string(local.frames) +
                                          " dropped=" + std::to_string(local.dropped) +
                                          " encode_ms=" + std::to_string(local.encodeMs) +
                                          " cpu_percent=" + std::to_string(local.cpuPercent) +
-                                         " working_set_MiB=" + std::to_string(local.workingSetMiB),
-                                     true);
+                                         " working_set_MiB=" + std::to_string(local.workingSetMiB) +
+                                         " mic_discontinuities=" + std::to_string(mic.discontinuities.load()) +
+                                         " desktop_discontinuities=" + std::to_string(desktop.discontinuities.load()),
+                                     false);
             }
             local.recording = recording;
             local.paused = paused;
@@ -408,16 +437,17 @@ void Engine::run(std::stop_token token) {
             int64_t waitUs =
                 video ? (texture ? std::clamp(nextVideo - clockUs(), int64_t(1000), int64_t(10000))
                                  : 1000000 / cfg.fps)
-                      : 125000;
-            std::unique_lock lock(mutex_);
-            auto wake = [&] {
-                return token.stop_requested() || generation_ != gen || !actions_.empty() ||
-                       visible_.load() != wasVisible;
-            };
+                      : 16667;
+            // High-resolution deadline wait; configuration/actions interrupt it immediately.
             if (!video && !previewVisible)
-                cv_.wait(lock, wake);
-            else
-                cv_.wait_for(lock, std::chrono::microseconds(waitUs), wake);
+                WaitForSingleObject(wake_, INFINITE);
+            else if (frameTimer.get()) {
+                frameTimer.arm(waitUs);
+                HANDLE events[] = {wake_, frameTimer.get()};
+                WaitForMultipleObjects(2, events, FALSE, INFINITE);
+            } else
+                WaitForSingleObject(wake_, DWORD(std::max<int64_t>(1, waitUs / 1000)));
+
         } catch (const winrt::hresult_error& e) {
             std::string error = utf8(e.message().c_str());
             Log::get().write("Capture error: " + error);

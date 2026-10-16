@@ -19,7 +19,7 @@ class Engine {
     enum Action { Record, Pause, ReplaySave, AudioRefresh };
     std::jthread thread_;
     std::mutex mutex_, stopMutex_;
-    std::condition_variable cv_;
+    HANDLE wake_ = nullptr;
     Config config_;
     Source source_;
     uint64_t generation_ = 0;
@@ -41,10 +41,10 @@ class Engine {
     void refreshAudio();
     void visible(bool value) {
         visible_ = value;
-        cv_.notify_one();
+        SetEvent(wake_);
     }
     EngineStats stats();
-    Preview preview();
+    Preview preview(uint64_t seen = 0);
     void stop();
 };
 } // namespace nco

@@ -110,6 +110,17 @@ void Capture::open(const Source& source, int backend) {
     if (backend == 2)
         openDuplication();
     else {
+        bool duplicated = false;
+        if (backend == 0 && !source.window) {
+            try {
+                openDuplication();
+                duplicated = true;
+            } catch (const std::exception& e) {
+                dup_.Reset();
+                Log::get().write(std::string("Desktop Duplication unavailable: ") + e.what());
+            }
+        }
+        if (!duplicated) {
         try {
             auto interop = winrt::get_activation_factory<
                 winrt::Windows::Graphics::Capture::GraphicsCaptureItem,
@@ -140,6 +151,13 @@ void Capture::open(const Source& source, int backend) {
                     winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,
                     2, item_.Size());
             session_ = pool_.CreateCaptureSession(item_);
+            try {
+                auto border = session_.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession3>();
+                if (border)
+                    border.IsBorderRequired(false);
+            } catch (...) {
+                Log::get().write("Window capture border is controlled by Windows permissions");
+            }
             session_.StartCapture();
             Log::get().write("Capture backend: Windows Graphics Capture");
         } catch (...) {
@@ -160,6 +178,7 @@ void Capture::open(const Source& source, int backend) {
             item_ = nullptr;
             Log::get().write("WGC unavailable; using Desktop Duplication");
             openDuplication();
+        }
         }
     }
     if (source.custom) {
@@ -235,6 +254,23 @@ bool Capture::frame(Com<ID3D11Texture2D>& texture) {
             throw;
         }
         dup_->ReleaseFrame();
+        if (info.PointerPosition.Visible && !pointerFailed_) {
+            try {
+                Com<IDXGISurface> surface;
+                check(latest_.As(&surface), "Cursor capture surface");
+                RECT region = source_.region;
+                MONITORINFO mi{sizeof(mi)};
+                GetMonitorInfoW(source_.monitor, &mi);
+                if (source_.custom) {
+                    OffsetRect(&region, mi.rcMonitor.left, mi.rcMonitor.top);
+                } else
+                    region = mi.rcMonitor;
+                pointer_.draw(surface.Get(), region);
+            } catch (const std::exception& e) {
+                pointerFailed_ = true;
+                Log::get().write(std::string("Cursor composition unavailable: ") + e.what());
+            }
+        }
     }
     texture = latest_;
     return true;
@@ -270,8 +306,8 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t) {
         desc.InputHeight = size_.h;
         desc.OutputWidth = thumbSize_.w;
         desc.OutputHeight = thumbSize_.h;
-        desc.InputFrameRate = {8, 1};
-        desc.OutputFrameRate = {8, 1};
+        desc.InputFrameRate = {60, 1};
+        desc.OutputFrameRate = {60, 1};
         desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         check(thumbDevice_->CreateVideoProcessorEnumerator(&desc, &thumbEnum_), "Preview scaler");
         check(thumbDevice_->CreateVideoProcessor(thumbEnum_.Get(), 0, &thumbProcessor_),
@@ -288,7 +324,8 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t) {
         d.Usage = D3D11_USAGE_STAGING;
         d.BindFlags = 0;
         d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        check(device_->CreateTexture2D(&d, nullptr, &thumbStage_), "Preview staging");
+        for (auto& stage : thumbStages_)
+            check(device_->CreateTexture2D(&d, nullptr, &stage), "Preview staging");
     }
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
     id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -308,14 +345,23 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t) {
     s.pInputSurface = iv.Get();
     check(thumbContext_->VideoProcessorBlt(thumbProcessor_.Get(), ov.Get(), 0, 1, &s),
           "Scale preview");
-    context_->CopyResource(thumbStage_.Get(), thumb_.Get());
+    context_->CopyResource(thumbStages_[thumbCursor_].Get(), thumb_.Get());
+    thumbPending_[thumbCursor_] = true;
+    thumbCursor_ = (thumbCursor_ + 1) % thumbStages_.size();
+    if (!thumbPending_[thumbCursor_])
+        return {};
+    auto stage = thumbStages_[thumbCursor_].Get();
     D3D11_MAPPED_SUBRESOURCE m{};
-    check(context_->Map(thumbStage_.Get(), 0, D3D11_MAP_READ, 0, &m), "Preview map");
+    const HRESULT mapped = context_->Map(stage, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+    if (mapped == DXGI_ERROR_WAS_STILL_DRAWING)
+        return {};
+    check(mapped, "Preview map");
     std::vector<uint8_t> b(size_t(thumbSize_.w) * thumbSize_.h * 4);
     for (int y = 0; y < thumbSize_.h; ++y)
         memcpy(b.data() + size_t(y) * thumbSize_.w * 4,
                static_cast<uint8_t*>(m.pData) + size_t(y) * m.RowPitch, size_t(thumbSize_.w) * 4);
-    context_->Unmap(thumbStage_.Get(), 0);
+    context_->Unmap(stage, 0);
+    thumbPending_[thumbCursor_] = false;
     return {thumbSize_, std::move(b)};
 }
 } // namespace nco

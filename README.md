@@ -8,13 +8,19 @@ Download **NCO-Setup.exe** from [Releases](https://github.com/NeusByCast/NCO/rel
 
 ## Use
 
-Choose a display or window on the dashboard and start recording. Configure FPS, resolution, quality and encoder in Recording settings. F9 starts/stops, F10 pauses/resumes, F8 saves replay by default. Microphone and speaker buttons mute independently. Enable replay in Replay settings; it continues independently of recording. Configure all shortcuts in Hotkeys, including single keys. Valid settings save immediately to `%LOCALAPPDATA%\NCO\settings.ini`.
+Choose a display or window on the dashboard and start recording. Configure FPS, resolution, quality and encoder in Recording settings. F9 starts/stops, F10 pauses/resumes, F8 saves replay by default. Microphone and speaker buttons mute independently. Enable replay in Recording settings; it continues independently of recording. Configure all shortcuts in Hotkeys, including single keys. Valid settings save immediately to `%LOCALAPPDATA%\NCO\settings.ini`.
 
 Encoding/capture settings are locked while recording or replay buffering. Stop recording and disable replay before changing them. Audio devices and mute/volume can change live. A source resize/disconnection may require reselecting the source. Errors appear in the status area and `%LOCALAPPDATA%\NCO\diagnostic.log`.
 
 Advanced settings show detected GPU adapters and memory, live process CPU/RAM use, encoder timing and missed deadlines. Capture compatibility can use Auto, force Windows Graphics Capture, or force Desktop Duplication for a display/region. A saved encoder that is unavailable on the current machine falls back to Auto after startup detection.
 
 Automatic remuxing records to a recoverable MKV and stream-copies to MP4/MOV/WebM after stopping; source is removed only after output verification. Recovery files remain if remux fails. WebM requires AV1 or VP9 and Opus; unavailable encoders are not offered. Auto selects compatible hardware, then software.
+
+Replay clips use the recording folder with a `Replay_` filename prefix. The five pages are Dashboard, Recording, Audio, Hotkeys and Advanced. Preview and animations stay enabled; preview capture/rendering pauses while minimized. Notifications last one second at the top-right.
+
+Auto capture prefers Desktop Duplication for displays/regions, avoiding the Windows capture outline. Window capture uses WGC; border suppression depends on Windows permission/support. Preview targets 60 FPS using asynchronous thumbnail readback and an independent high-resolution UI timer. Hardware/driver load can reduce actual FPS.
+
+AMD probing tries each AMD adapter explicitly; Auto also tries hardware-only Windows Media Foundation before CPU encoding. Failed probes and recording initialization errors are logged, including FFmpeg error messages. A GPU using uploaded frames is still hardware encoding.
 
 ## Build
 

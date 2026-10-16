@@ -1,5 +1,7 @@
 #pragma once
 #include "platform.hpp"
+#include "pointer.hpp"
+#include <array>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <winrt/Windows.Foundation.h>
@@ -21,10 +23,14 @@ class Capture {
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem item_{nullptr};
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool pool_{nullptr};
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
-    Com<ID3D11Texture2D> latest_, stage_, thumb_, thumbStage_;
+    Com<ID3D11Texture2D> latest_, stage_, thumb_;
+    std::array<Com<ID3D11Texture2D>, 3> thumbStages_;
+    std::array<bool, 3> thumbPending_{};
+    size_t thumbCursor_ = 0;
     Size size_, thumbSize_;
     Source source_;
-    bool fallback_ = false;
+    bool fallback_ = false, pointerFailed_ = false;
+    PointerOverlay pointer_;
     Com<ID3D11VideoDevice> thumbDevice_;
     Com<ID3D11VideoContext> thumbContext_;
     Com<ID3D11VideoProcessorEnumerator> thumbEnum_;

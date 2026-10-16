@@ -136,29 +136,4 @@ std::vector<AudioChunk> AudioCapture::drain() {
     samples_ = 0;
     return r;
 }
-void AudioTimeline::add(const AudioChunk& c, int64_t epoch) {
-    int64_t start = (c.us - epoch) * 48000 / 1000000;
-    for (size_t i = 0; i < c.samples.size() / 2; ++i) {
-        int64_t sample = start + int64_t(i);
-        if (sample < 0)
-            continue;
-        size_t slot = size_t(sample) % tags_.size();
-        tags_[slot] = sample;
-        data_[slot * 2] = c.samples[i * 2];
-        data_[slot * 2 + 1] = c.samples[i * 2 + 1];
-    }
-}
-void AudioTimeline::read(int64_t sample, int count, float gain, std::vector<float>& out) const {
-    out.assign(size_t(count) * 2, 0);
-    for (int i = 0; i < count; ++i) {
-        int64_t s = sample + i;
-        if (s < 0)
-            continue;
-        size_t slot = size_t(s) % tags_.size();
-        if (tags_[slot] == s) {
-            out[size_t(i) * 2] = data_[slot * 2] * gain;
-            out[size_t(i) * 2 + 1] = data_[slot * 2 + 1] * gain;
-        }
-    }
-}
 } // namespace nco

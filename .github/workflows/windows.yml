@@ -29,6 +29,7 @@ jobs:
             vcpkg_installed
             ~/AppData/Local/vcpkg/archives
           key: nco-static-v1-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          restore-keys: nco-static-v1-
       - name: Bootstrap libraries
         shell: pwsh
         run: |
@@ -84,6 +85,9 @@ jobs:
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer/nco.iss
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Inspect interactive installer pages
+        shell: pwsh
+        run: ./tools/installer_ui_test.ps1
       - name: Install, launch and uninstall smoke test
         shell: pwsh
         run: |
@@ -126,4 +130,4 @@ jobs:
         shell: pwsh
         run: |
           $tag = "preview-${{ github.run_number }}"
-          gh release create $tag output/NCO-Setup.exe NCO-Corresponding-Source.zip --target "${{ github.sha }}" --title "NCO 0.1 preview — Windows validation required" --prerelease --notes-file RELEASE_NOTES.md
+          gh release create $tag output/NCO-Setup.exe NCO-Corresponding-Source.zip --target "${{ github.sha }}" --title "NCO 0.2 preview — Windows validation required" --prerelease --notes-file RELEASE_NOTES.md

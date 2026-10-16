@@ -6,6 +6,8 @@ This is an engineering preview, not a fully hardware-qualified release. A succes
 
 - Linux GCC 13 C++20 core tests, also under AddressSanitizer/UBSan with LeakSanitizer disabled because the container cannot inspect process threads: integer frame deadlines at 15/30/60/96/144/240 FPS (no early wakeup or duplicate timestamp); aspect-preserving letterbox geometry; resolution constraints and even dimensions; bitrate ordering; WebM codec compatibility; duplicate shortcut detection; replay GOP trimming and hard byte limit. Passed.
 
+- Portable audio regression tests: 50 jittered stereo packets remain contiguous; actual gaps stay silent; very quiet noise is suppressed; normal tones retain level; non-finite input is sanitized. Passed locally with GCC and ASan/UBSan. Real endpoint buzzing requires user-PC retesting.
+
 ## Automated Windows checks (results are in Actions)
 
 - MSVC x64 Release compile, static CRT and dependency libraries.
@@ -13,7 +15,8 @@ This is an engineering preview, not a fully hardware-qualified release. A succes
 - Windows shortcut integration: real RegisterHotKey single keys/combinations, duplicate detection and controlled ownership conflict; real key delivery to a minimized test window when desktop input injection is available. The report distinguishes passed checks from unavailable input tests.
 - PE import inspection rejects external Visual C++ and FFmpeg runtimes.
 - `NCO.exe --self-test`: synthetic video and 440 Hz stereo audio; MP4, MKV, MOV, WebM muxing; A/V packet timestamp comparisons; pause timeline; 15/30/60 FPS and all quality levels; native/custom scaling; accelerated 15/30/60-second replay snapshots; concurrent recording/replay exports; MKV-to-MP4 remux with codec and packet-count comparisons. These do not exercise real-time capture or endpoint audio.
-- `NCO.exe --ui-smoke-test`: create/render all seven actual native pages and a 920x540 dashboard, capture screenshots, then operate real controls through Win32 mouse/key messages. Checks dropdown selections, numeric edits, independent mute/preview/remux toggles, settings persistence, audio/replay configuration, interactive hotkey capture/clear/duplicate warnings, appearance/advanced toggles and native minimize/maximize/restore. Results go to `nco-self-test/ui-results.txt`; original settings are restored afterward. This does not establish real capture/audio operation, every control, animation quality or DPI correctness.
+- `NCO.exe --ui-smoke-test`: create/render all five actual native pages and a 920x540 dashboard, capture screenshots, then operate real controls through Win32 mouse/key messages. Checks dropdown selections, numeric edits, independent mute/remux toggles, dropdown re-click dismissal, settings persistence, audio/replay configuration, interactive hotkey capture/clear/duplicate warnings, advanced toggles and native minimize/maximize/restore. Results go to `nco-self-test/ui-results.txt`; original settings are restored afterward. This does not establish real capture/audio operation, every control, animation quality or DPI correctness.
+- Interactive Inno Setup welcome/license/destination/tasks/ready screenshots for manual contrast inspection.
 - Inno Setup silent installation, installed self-test, installed UI launch, shortcuts, registry entry, update/settings persistence, uninstall.
 
 ## Requires suitable Windows machines — UNVERIFIED
@@ -33,11 +36,19 @@ This is an engineering preview, not a fully hardware-qualified release. A succes
 
 - Windows 10 1903+ x64 is required; Windows 10 2004+ is recommended for capture-excluded notifications. Toasts are suppressed when exclusion cannot be requested. A brown in-window status message is used instead.
 - SDR BGRA capture with BT.709 NV12/YUV420 output. HDR tone mapping is not implemented.
-- Hardware uses D3D11 textures when NVENC/AMF accepts them; Intel and hardware fallback paths use CPU readback/upload. GPU processing support varies by driver. Software VP9 at high resolutions is expensive.
+- Hardware uses D3D11 textures when NVENC/AMF/Media Foundation accepts them; Intel and hardware fallback paths use CPU readback/upload. GPU processing support varies by driver. Software VP9 at high resolutions is expensive.
 - Active recording/replay locks capture and encoding settings. Disabling replay allows changes. Device changes restart the audio endpoints; missing devices emit a visible error and the affected track becomes silence until reselected/refreshed.
 - Window resizing during capture currently stops the pipeline with a recoverable error. A window source must remain available; minimized applications may stop producing frames.
-- One encoding worker consumes the OS capture pool; audio endpoints and disk output have independent workers. Preview reads back only a GPU-scaled thumbnail at 8 FPS and stops when minimized.
-- Recording pause affects the recording writer; replay continues. Audio at pause/resume boundaries can differ by an encoder frame. Synchronization uses QPC endpoint timestamps at 48 kHz; long-run behavior is unverified.
+- One encoding worker consumes the OS capture pool; audio endpoints and disk output have independent workers. Preview reads back only a GPU-scaled thumbnail at up to 60 FPS and stops when minimized.
+- Recording pause affects the recording writer; replay continues. Audio at pause/resume boundaries can differ by an encoder frame. Synchronization uses QPC endpoint timestamps at 48 kHz with continuity across minor timestamp jitter; long-run behavior is unverified.
 - Replay exports/remux/verification have a separate background-priority worker. Recording writes have a 64 MiB queue; exports have a 256 MiB encoded-packet budget. A saturated storage device can still miss recording deadlines. Recording queue exhaustion stops the recording with a visible error; a full replay queue rejects only the replay save. Source/recovery files are retained on failure.
 - Brown controls are custom Direct2D. Full accessibility/UI Automation is not implemented. Native maximize hit testing is present, but Windows 11 Snap Layout hover behavior still requires testing. No claim of pixel-perfect UI is made.
 - Installer and executable are unsigned. No updater service, system tray, or external FFmpeg application is included.
+
+## 0.2 changes requiring hardware retest
+
+- Full-display Auto capture now prefers Desktop Duplication; WGC remains for windows and compatibility fallback. Window-border suppression can be denied by Windows; display capture through Duplication does not use that indicator. Cursor composition uses a small GPU overlay; animated/XOR pointer shapes need additional validation.
+- Preview targets 60 FPS with three staging textures and nonblocking readback. UI and recorder use high-resolution waitable timers; static settings pages do not redraw continuously. Actual FPS and recording overhead remain hardware-dependent.
+- AMD encoding explicitly probes each AMD adapter; hardware-only Media Foundation H.264/HEVC is available as another path. No AMD hardware is attached to the CI runner, so the user's RX 5500M still needs retesting. Diagnostics now retain probe/init errors and missed-frame/audio-discontinuity summaries.
+- DC removal and a conservative silence gate target low-level idle hiss/buzz, with smooth stereo gain ramps. Normal tone preservation and timestamp continuity are tested; real audio quality/drift still require endpoint testing.
+- Replay settings are merged into Recording. Replay files share the recording directory with a Replay_ prefix. Appearance controls and instructional/branding clutter are removed; animations and preview remain enabled internally. Notifications last one second.

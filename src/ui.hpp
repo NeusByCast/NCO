@@ -20,10 +20,13 @@ class UI {
         std::function<void(int)> choose;
         bool closing = false;
         int64_t closeStart = 0;
+        std::wstring owner;
     };
     HWND hwnd_ = nullptr, toast_ = nullptr, edit_ = nullptr;
     HINSTANCE instance_;
     Config cfg_;
+    FrameTimer previewTimer_;
+    bool previewTimerActive_ = false;
     std::unique_ptr<Engine> engine_;
     std::unique_ptr<Hotkeys> hotkeys_;
     Com<ID2D1Factory> factory_;
@@ -60,11 +63,13 @@ class UI {
     std::function<void(std::wstring)> editCommit_;
     EngineStats stats_;
     void draw();
+    void updatePreviewTimer();
     void resources();
     void text(std::wstring s, D2D1_RECT_F rect, int size = 14,
-              D2D1_COLOR_F color = D2D1::ColorF(0xece2d8), bool bold = false);
+              D2D1_COLOR_F color = D2D1::ColorF(0xece2d8), bool bold = false, bool center = false);
     void round(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 10);
     void icon(const std::wstring& name, D2D1_RECT_F rect, D2D1_COLOR_F color);
+    D2D1_COLOR_F hoverColor(const std::wstring& id, D2D1_COLOR_F base);
     void button(std::wstring id, std::wstring label, D2D1_RECT_F rect, std::function<void()> click,
                 bool primary = false, bool enabled = true, std::wstring glyph = L"");
     void toggle(std::wstring id, std::wstring label, float y, bool value,
