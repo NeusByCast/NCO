@@ -4,6 +4,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <map>
+#include <tuple>
 namespace nco {
 class UI {
     struct Control {
@@ -42,6 +43,7 @@ class UI {
     Com<ID2D1Bitmap> bitmap_;
     uint64_t bitmapSerial_ = 0;
     std::map<int, Com<IDWriteTextFormat>> fonts_;
+    std::map<std::tuple<std::wstring, int, float, float>, Com<IDWriteTextLayout>> textLayouts_;
     std::vector<Control> controls_;
     Popup popup_;
     struct Tween {
@@ -59,7 +61,7 @@ class UI {
     std::vector<std::wstring> keyErrors_;
     int sourceIndex_ = 0, page_ = 0, scroll_ = 0, maxScroll_ = 0, hotkeyIndex_ = -1, focus_ = -1,
         smokeStep_ = 0;
-    bool scrollDragging_ = false;
+    bool scrollDragging_ = false, trackingMouse_ = false;
     float w_ = 1120, h_ = 760, dpi_ = 96;
     bool closing_ = false, smoke_ = false, probing_ = true, renderFailed_ = false;
     std::wstring hover_, message_;
@@ -73,7 +75,7 @@ class UI {
     bool animationActiveAt(int64_t now) const;
     bool animationFrameNeedsPaint(int64_t now) const;
     void resources();
-    void text(std::wstring s, D2D1_RECT_F rect, int size = 14,
+    void text(const std::wstring& s, D2D1_RECT_F rect, int size = 14,
               D2D1_COLOR_F color = D2D1::ColorF(0xece2d8), bool bold = false, bool center = false);
     void round(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 10);
     void icon(const std::wstring& name, D2D1_RECT_F rect, D2D1_COLOR_F color);

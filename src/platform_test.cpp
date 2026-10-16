@@ -1,6 +1,7 @@
 #include "platform.hpp"
 #include "toast.hpp"
 #include <ostream>
+#include <d3d11.h>
 
 namespace nco {
 namespace {
@@ -52,6 +53,35 @@ void releaseTestKeys() {
 
 void regionInputSelfTest();
 void platformSelfTest(std::ostream& report) {
+    {
+        Com<ID3D11Device> device;
+        Com<ID3D11DeviceContext> context;
+        check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                               D3D11_SDK_VERSION, &device, nullptr, &context), "Readback regression device");
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = desc.Height = 16;
+        desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        std::vector<uint32_t> pixels(256, 0x11223344);
+        D3D11_SUBRESOURCE_DATA data{pixels.data(), 16 * 4, 0};
+        Com<ID3D11Texture2D> source, stage;
+        check(device->CreateTexture2D(&desc, &data, &source), "Readback regression texture");
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        check(device->CreateTexture2D(&desc, nullptr, &stage), "Readback regression stage");
+        context->CopyResource(stage.Get(), source.Get());
+        context->Flush();
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        HRESULT result;
+        const auto deadline = GetTickCount64() + 2000;
+        while ((result = context->Map(stage.Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped)) ==
+               DXGI_ERROR_WAS_STILL_DRAWING && GetTickCount64() < deadline) Sleep(1);
+        check(result, "Nonblocking readback completion");
+        const bool valid = *static_cast<uint32_t*>(mapped.pData) == pixels.front();
+        context->Unmap(stage.Get(), 0);
+        require(valid, "Submitted GPU copy did not reach the readback stage");
+    }
+    report << "PASS explicit GPU submission and nonblocking staging completion on D3D11 WARP\n";
     regionInputSelfTest();
     report << "PASS region ignores opening-button release and accepts an explicit drag\n";
     HWND notification = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, L"STATIC", L"",

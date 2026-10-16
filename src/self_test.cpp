@@ -102,6 +102,7 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
     accept(video.flush());
     accept(audio.flush());
     mux.close();
+    require(verifyFile(path, false), "Completed recording has no readable first keyframe");
     require(sawFirstVideoPacket && firstVideoPacketWasKey,
             "Encoder did not mark its forced first frame as a keyframe");
     auto streams = inspect(path);
@@ -330,6 +331,8 @@ int mediaSelfTest() {
     std::ofstream report(dir / L"results.txt");
     try {
         av_log_set_level(AV_LOG_ERROR);
+        encoderConfigurationSelfTest();
+        report << "PASS real FFmpeg AMF options at all five quality levels: no lookahead/pre-analysis or B-frame input dependency\n";
         platformSelfTest(report);
         {
             Config config;

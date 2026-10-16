@@ -138,7 +138,8 @@ int UI::run(int show) {
         HANDLE timer = previewTimer_.get();
         DWORD ready = MsgWaitForMultipleObjectsEx(timer ? 1 : 0, timer ? &timer : nullptr,
                                                   INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        if (timer && ready == WAIT_OBJECT_0 && page_ == 0 && !IsIconic(hwnd_))
+        if (timer && ready == WAIT_OBJECT_0 && page_ == 0 && !IsIconic(hwnd_) &&
+            (animationActiveAt(clockUs()) || (engine_ && engine_->previewChanged(bitmapSerial_))))
             invalidate();
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
@@ -184,7 +185,8 @@ void UI::resources() {
                   D2D1::RenderTargetProperties(
                       D2D1_RENDER_TARGET_TYPE_DEFAULT,
                       D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_UNKNOWN), dpi_, dpi_),
-                  D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(rc.right, rc.bottom)),
+                  D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(rc.right, rc.bottom),
+                                                  D2D1_PRESENT_OPTIONS_IMMEDIATELY),
                   &target_),
               "UI render target");
         check(target_->CreateSolidColorBrush(ink, &brush_), "UI brush");
@@ -192,7 +194,7 @@ void UI::resources() {
         bitmapSerial_ = 0;
     }
 }
-void UI::text(std::wstring s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool bold, bool center) {
+void UI::text(const std::wstring& s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool bold, bool center) {
     int id = size + (bold ? 1000 : 0) + (center ? 2000 : 0);
     if (!fonts_.count(id)) {
         Com<IDWriteTextFormat> f;
@@ -211,9 +213,17 @@ void UI::text(std::wstring s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool 
         f->SetTrimming(&trim, ellipsis.Get());
         fonts_[id] = f;
     }
+    const auto key = std::make_tuple(s, id, r.right - r.left, r.bottom - r.top);
+    auto layout = textLayouts_.find(key);
+    if (layout == textLayouts_.end()) {
+        if (textLayouts_.size() >= 256) textLayouts_.clear();
+        Com<IDWriteTextLayout> value;
+        check(write_->CreateTextLayout(s.c_str(), UINT32(s.size()), fonts_[id].Get(),
+                                       r.right - r.left, r.bottom - r.top, &value), "UI text layout");
+        layout = textLayouts_.emplace(key, std::move(value)).first;
+    }
     brush_->SetColor(color);
-    target_->DrawTextW(s.c_str(), UINT32(s.size()), fonts_[id].Get(), r, brush_.Get(),
-                       D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    target_->DrawTextLayout({r.left, r.top}, layout->second.Get(), brush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 void UI::round(D2D1_RECT_F r, D2D1_COLOR_F color, float radius) {
     brush_->SetColor(color);
@@ -460,6 +470,7 @@ void UI::command(int a) {
     }
     switch (a) {
     case 0:
+        if (!engine_->stats().recording) message_.clear();
         engine_->recording();
         break;
     case 1:
@@ -483,12 +494,6 @@ void UI::dashboard() {
     float left = 206, right = w_ - 28, width = right - left;
     float y = 140 - float(scroll_);
     bool locked = stats_.recording;
-    if (!sources_.empty() && sources_[size_t(sourceIndex_)].window) {
-        wchar_t title[512]{};
-        auto& selected = sources_[size_t(sourceIndex_)];
-        if (IsWindow(selected.window) && GetWindowTextW(selected.window, title, 512))
-            selected.name = std::wstring(L"Window · ") + title;
-    }
     std::wstring source =
         sources_.empty() ? L"No capture source" : sources_[size_t(sourceIndex_)].name;
     text(L"CAPTURE SOURCE", {left, y, right, y + 22}, 11, muted, true);
@@ -566,12 +571,14 @@ void UI::dashboard() {
     wchar_t duration[32];
     swprintf_s(duration, L"%02lld:%02lld:%02lld", sec / 3600, (sec / 60) % 60, sec % 60);
     text(duration, {left + 16, y + 10, left + 160, y + 42}, 24, ink, true);
-    text(stats_.recording ? (stats_.paused ? L"Recording paused" : L"Recording in progress")
+    text(stats_.starting ? L"Starting recording…"
+                        : stats_.recording ? (stats_.paused ? L"Recording paused" : L"Recording in progress")
                           : L"",
          {left + 16, y + 42, left + 190, y + 66}, 11, muted);
     button(
         L"record",
         stats_.finishing ? L"Finalizing…"
+        : stats_.starting ? L"Starting…"
         : stats_.recording ? L"Stop recording"
         : probing_       ? L"Detecting encoders…"
                          : L"Start recording",
@@ -979,7 +986,7 @@ void UI::draw() {
     h_ = client.bottom * 96 / dpi_;
     stats_ = engine_ ? engine_->stats() : EngineStats{};
     updatePreviewTimer();
-    if (engine_ && cfg_.preview) {
+    if (engine_ && cfg_.preview && page_ == 0 && !stats_.recording) {
         auto p = engine_->preview(bitmapSerial_);
         if (p.serial && p.serial != bitmapSerial_) {
             if (p.pixels.empty()) bitmap_.Reset();
@@ -1039,15 +1046,18 @@ void UI::draw() {
         false, true, L"close");
     text(titles[page_], {206, 62, w_ - 28, 100}, 27, ink, true);
     float fade = cfg_.animations ? ease(float(clockUs() - navigationStart_) / 150000) : 1;
-    target_->PushLayer(D2D1::LayerParameters({180, 136, w_, h_ - 38}, nullptr,
+    const bool fading = fade < 1;
+    if (fading) target_->PushLayer(D2D1::LayerParameters({180, 136, w_, h_ - 38}, nullptr,
                                              D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                                              D2D1::IdentityMatrix(), fade),
                        nullptr);
+    else target_->PushAxisAlignedClip({180, 136, w_, h_ - 38}, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     if (page_ == 0)
         dashboard();
     else
         settings();
-    target_->PopLayer();
+    if (fading) target_->PopLayer();
+    else target_->PopAxisAlignedClip();
     if (maxScroll_ > 0) {
         const float track = h_ - 190;
         const float thumb = std::max(24.f, track * track / (track + maxScroll_));
@@ -1185,7 +1195,7 @@ void UI::notify(std::string msg, bool error) {
             save(false);
         }
     } else {
-        message_.clear();
+        if (msg != "Recording stopped") message_.clear();
         toast(wide(msg));
     }
     invalidate();
@@ -1368,14 +1378,18 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_ERASEBKGND:
         return 1;
     case WM_MOUSELEAVE:
+        trackingMouse_ = false;
+        if (hover_.empty()) return 0;
         hover_.clear();
         hoverStart_ = clockUs();
         SetTimer(h, 2, 33, nullptr);
         invalidate();
         return 0;
     case WM_MOUSEMOVE: {
-        TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0};
-        TrackMouseEvent(&track);
+        if (!trackingMouse_) {
+            TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0};
+            trackingMouse_ = TrackMouseEvent(&track) != FALSE;
+        }
         float x = GET_X_LPARAM(l) * 96 / dpi_, y = GET_Y_LPARAM(l) * 96 / dpi_;
         if (scrollDragging_) {
             scrollAt(y);
@@ -1489,6 +1503,12 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         if (w == 1) {
+            if (page_ == 0 && !sources_.empty()) {
+                auto& selected = sources_[size_t(sourceIndex_)];
+                wchar_t title[512]{};
+                if (selected.window && GetWindowTextW(selected.window, title, 512))
+                    selected.name = std::wstring(L"Window · ") + title;
+            }
             if (!IsIconic(h) && (page_ == 6 || page_ == 0))
                 invalidate();
         } else if (w == 2) {

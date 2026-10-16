@@ -7,13 +7,13 @@
 - Cross-GPU NV12 readback uses three staging slots with nonblocking polling during capture. Original timestamps are retained; stop drains pending frames. Full queues drop input instead of accumulating latency.
 - Recording settings now default to 35,000 kbps and allow typed bitrate entry; zero remains available for automatic bitrate on older or manually edited configurations.
 - Added VBR peak constrained, CQP and CBR controls. VBR uses the selected bitrate as target and 1.5x as peak; CBR caps at target, and CQP uses quality-preset QP values.
-- AMF Low/Medium/High/Very High/Ultra now map to speed/balanced/quality/quality/quality. Ultra requests pre-analysis and VBAQ when exposed by the active FFmpeg AMF encoder; diagnostics report option support.
+- AMF Low/Medium/High/Very High/Ultra map to speed/balanced/balanced/quality/quality. All recording presets disable pre-analysis and lookahead to prevent the bounded hardware surface queue from stalling before its first output packet.
 - Notifications render one premultiplied bitmap and animate its DWM position/alpha. No repeated font creation, window-region replacement, or paint-based redraw; placement stays fixed to the monitor chosen at notification start.
 - Diagnostics include encoder queue depth and readback rejection in drop counts.
 - Recording pauses live-preview scaling/readback to leave more GPU bandwidth for the game and encoder; the dashboard explains when preview is paused.
 - The custom title bar no longer requests a native caption, preventing duplicate Windows minimize/maximize/close glyphs while retaining native resizing.
 - Automatic remux now logs whether it is skipped because MKV is already selected, queued, started, completed, or failed. Successful remux completion is reported; the settings hint explains the MKV behavior.
-- High, Very High and Ultra use higher motion recording bitrates; AMD AMF High+ now selects its Quality preset and NVIDIA High+ selects NVENC P5/HQ. Diagnostics record the effective preset, rate-control mode, peak rate and 4:2:0 pixel format.
+- High, Very High and Ultra use higher motion recording bitrates; AMD AMF Very High/Ultra select Quality and NVIDIA Very High/Ultra select NVENC P5/HQ. Diagnostics record the effective preset, rate-control mode, peak rate and 4:2:0 pixel format.
 
 Automated Windows tests exercise region input messages, region replacement, popup release/clip handling, cached notification rendering at four requested DPI values, and a deliberately slow software encoder worker. These are not physical-GPU benchmarks or proof of smoothness on the user's laptop. Real-game FPS, GPU readback, live capture/audio synchronization, physical DPI layouts, and notification capture exclusion still require hardware testing.
 
@@ -25,4 +25,6 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 
 - Dashboard preview redraw is capped at 30 FPS and shares its paint cadence with animations; notification ticks no longer trigger unnecessary full-window redraws; Windows UI tests exercise paint scheduling with and without active preview.
 - Recording FPS choices are 15, 30 and 60 only. The custom field and Custom dropdown option are removed; unsupported saved FPS values migrate to 60.
-- The attached diagnostic could not be opened in this session; current recording quality and GPU load still require a readable current diagnostic and real-PC retest.
+- Recording files open only after the encoder produces a video keyframe; the dashboard shows Starting until then. GPU conversion/readback work is submitted explicitly.
+- Capture follows the selected frame rate. Muted audio inputs stop their capture workers. Preview reuses processor views and does not overwrite pending readback slots.
+- UI redraws reuse text layouts and avoid a full-page compositing layer outside navigation fades. Successful recording validation checks the initial keyframe without rescanning the entire video.

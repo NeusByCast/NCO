@@ -58,6 +58,10 @@ jobs:
         run: cmake -S . -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/.vcpkg/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows-nco" "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/triplets" "-DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/build/vcpkg-overlay"
       - name: Compile
         run: cmake --build build --config Release --parallel
+      - name: Compare UI redraw cost with the previous test build
+        timeout-minutes: 8
+        shell: pwsh
+        run: ./tools/benchmark_ui.ps1
       - name: Inspect executable dependencies
         shell: pwsh
         run: |

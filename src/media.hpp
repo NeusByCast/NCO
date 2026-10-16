@@ -121,7 +121,7 @@ class Muxer {
     void close();
 };
 void remuxFile(const std::filesystem::path& source, const std::filesystem::path& target);
-bool verifyFile(const std::filesystem::path& path);
+bool verifyFile(const std::filesystem::path& path, bool fullScan = true);
 class DiskWriter {
     struct Job {
         enum Type { Open, Write, Close, Replay, Remux, Verify, Quit } type;
@@ -155,4 +155,5 @@ class DiskWriter {
     void replay(std::filesystem::path path, std::vector<Track> tracks, std::vector<Packet> clip);
 };
 int mediaSelfTest();
+void encoderConfigurationSelfTest();
 } // namespace nco

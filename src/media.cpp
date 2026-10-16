@@ -120,7 +120,7 @@ static std::vector<Packet> receive(AVCodecContext* c, int stream) {
     return out;
 }
 static void configureVideo(AVCodecContext* c, const std::string& name, const Config& cfg,
-                           Size output, AVPixelFormat format, bool amfUltraFeatures = true) {
+                           Size output, AVPixelFormat format) {
     c->width = output.w;
     c->height = output.h;
     c->pix_fmt = format;
@@ -158,7 +158,7 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         c->thread_count = std::clamp(int(std::thread::hardware_concurrency() / 2), 1, 8);
     }
     if (name.find("nvenc") != std::string::npos) {
-        av_opt_set(c->priv_data, "preset", cfg.quality >= 2 ? "p5" : "p3", 0);
+        av_opt_set(c->priv_data, "preset", cfg.quality >= 3 ? "p5" : cfg.quality >= 1 ? "p4" : "p3", 0);
         av_opt_set(c->priv_data, "tune", cfg.quality >= 2 ? "hq" : "ull", 0);
         av_opt_set_int(c->priv_data, "rc-lookahead", 0, 0);
         const char* rc = rateControl == 1 ? "constqp" : rateControl == 2 ? "cbr" : "vbr";
@@ -170,9 +170,9 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     }
     if (name.find("amf") != std::string::npos) {
         av_opt_set(c->priv_data, "usage", "lowlatency", 0);
+        c->flags |= AV_CODEC_FLAG_LOW_DELAY;
         const char* amfQuality = cfg.quality == 0 ? "speed"
-                               : cfg.quality == 1 ? "balanced"
-                                                  : "quality";
+                               : cfg.quality < 3 ? "balanced" : "quality";
         int qualityResult = av_opt_set(c->priv_data, "quality", amfQuality, 0);
         if (qualityResult < 0)
             Log::get().write("AMF quality preset could not be set: " + std::string(amfQuality));
@@ -189,14 +189,11 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         // boundary, so explicitly ask AMF to turn forced I pictures into IDRs.
         av_opt_set_int(c->priv_data, "forced_idr", 1, 0);
 
-        const bool ultra = cfg.quality == 4 && amfUltraFeatures;
-        int preanalysisResult = av_opt_set_int(c->priv_data, "preanalysis", ultra ? 1 : 0, 0);
-        int vbaqResult = av_opt_set_int(c->priv_data, "vbaq", ultra ? 1 : 0, 0);
-        if (ultra) {
-            Log::get().write("AMF Ultra option requests: preanalysis=" +
-                             std::string(preanalysisResult >= 0 ? "accepted" : "unavailable") +
-                             " VBAQ=" + (vbaqResult >= 0 ? "accepted" : "unavailable"));
-        }
+        // Lookahead needs more input surfaces than a bounded real-time worker
+        // can supply. Enabling it can stall AMF before the first output packet.
+        av_opt_set_int(c->priv_data, "preanalysis", 0, 0);
+        av_opt_set_int(c->priv_data, "pa_lookahead_buffer_depth", 0, 0);
+        av_opt_set_int(c->priv_data, "vbaq", 0, 0);
         if (rateControl == 1) {
             constexpr int qp[] = {36, 32, 27, 23, 19};
             const int selectedQp = qp[std::clamp(cfg.quality, 0, 4)];
@@ -222,6 +219,25 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         av_opt_set_int(c->priv_data, "cpu-used", 8, 0);
         av_opt_set_int(c->priv_data, "lag-in-frames", 0, 0);
         c->thread_count = 4;
+    }
+}
+void encoderConfigurationSelfTest() {
+    const auto codec = avcodec_find_encoder_by_name("h264_amf");
+    if (!codec) throw std::runtime_error("AMF configuration regression requires compiled AMF support");
+    for (int quality = 0; quality <= 4; ++quality) {
+        auto release = [](AVCodecContext* c) { avcodec_free_context(&c); };
+        std::unique_ptr<AVCodecContext, decltype(release)> context(avcodec_alloc_context3(codec), release);
+        if (!context) throw std::bad_alloc();
+        Config config;
+        config.quality = quality;
+        configureVideo(context.get(), "h264_amf", config, {1920, 1080}, AV_PIX_FMT_D3D11);
+        int64_t analysis = -1, lookahead = -1, depth = 0;
+        avcheck(av_opt_get_int(context->priv_data, "preanalysis", 0, &analysis), "Read AMF analysis setting");
+        avcheck(av_opt_get_int(context->priv_data, "pa_lookahead_buffer_depth", 0, &lookahead), "Read AMF lookahead setting");
+        avcheck(av_opt_get_int(context->priv_data, "async_depth", 0, &depth), "Read AMF queue setting");
+        if (analysis || lookahead || depth <= lookahead || context->max_b_frames ||
+            !(context->flags & AV_CODEC_FLAG_LOW_DELAY))
+            throw std::runtime_error("Real-time AMF configuration can block waiting for future input frames");
     }
 }
 std::vector<EncoderChoice> probeEncoders() {
@@ -327,22 +343,16 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
             !synthetic && capture && preferredCaptureDevice(capture) &&
             (name.find("nvenc") != std::string::npos || name.find("amf") != std::string::npos ||
              name.find("_mf") != std::string::npos);
-        const bool canRetryWithoutUltra = name.find("amf") != std::string::npos && cfg.quality == 4;
-        std::vector<std::pair<int, bool>> attempts;
-        auto addAttempt = [&](int index) {
-            attempts.emplace_back(index, true);
-            if (canRetryWithoutUltra)
-                attempts.emplace_back(index, false);
-        };
+        std::vector<int> attempts;
         if (canGpu)
-            addAttempt(-2); // capture device, zero readback
+            attempts.push_back(-2); // capture device, zero readback
         if (name.find("amf") != std::string::npos) {
             auto amd = amdAdapters();
             for (int index : amd)
-                addAttempt(index);
+                attempts.push_back(index);
         }
-        addAttempt(-1); // library-selected device / software encoder
-        for (auto [attempt, amfUltraFeatures] : attempts) {
+        attempts.push_back(-1); // library-selected device / software encoder
+        for (int attempt : attempts) {
             try {
                 codec_ = avcodec_alloc_context3(codec);
                 if (!codec_)
@@ -351,7 +361,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 AVPixelFormat fmt =
                     gpu_ ? AV_PIX_FMT_D3D11
                          : (name.find("lib") == 0 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NV12);
-                configureVideo(codec_, name, cfg, output_, fmt, amfUltraFeatures);
+                configureVideo(codec_, name, cfg, output_, fmt);
                 if (gpu_) {
                     device_ = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
                     if (!device_)
@@ -488,9 +498,9 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     " GPU_NV12_readback=" + std::to_string(nv12Readback_));
                 const char* preset = name.find("amf") != std::string::npos
                                          ? cfg.quality == 0 ? "speed"
-                                           : cfg.quality == 1 ? "balanced" : "quality"
+                                           : cfg.quality < 3 ? "balanced" : "quality"
                                      : name.find("nvenc") != std::string::npos
-                                         ? cfg.quality >= 2 ? "p5/hq" : "p3/ull"
+                                         ? cfg.quality >= 3 ? "p5/hq" : cfg.quality >= 1 ? "p4" : "p3/ull"
                                      : name.find("qsv") != std::string::npos ? "veryfast"
                                                                               : "codec-default";
                 const char* rateMode = cfg.rateControl == 1 ? "CQP"
@@ -502,11 +512,7 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                                  " bitrate_role=" + bitrateRole +
                                  " target_bps=" + std::to_string(codec_->bit_rate) +
                                  " peak_bps=" + std::to_string(codec_->rc_max_rate) +
-                                 " ultra_features=" +
-                                 (name.find("amf") != std::string::npos && cfg.quality == 4
-                                      ? (amfUltraFeatures ? "preanalysis_vbaq_attempted" :
-                                                       "disabled_after_fallback")
-                                      : "not_requested") +
+                                 " lookahead=disabled" +
                                  " pixel_format=" +
                                  (fmt == AV_PIX_FMT_D3D11 ? "d3d11/nv12"
                                   : fmt == AV_PIX_FMT_NV12 ? "nv12/4:2:0"
@@ -532,8 +538,6 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 enumerator_.Reset();
                 vd_.Reset();
                 vc_.Reset();
-                if (canRetryWithoutUltra && amfUltraFeatures)
-                    Log::get().write("AMF Ultra initialization retry without optional pre-analysis/VBAQ features");
             }
         }
     }
@@ -673,6 +677,8 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         if (free >= 0) {
             convert(t, uploadNv12_.Get(), 0);
             capture_->context()->CopyResource(uploadStages_[size_t(free)].Get(), uploadNv12_.Get());
+            // DO_NOT_WAIT maps never submit a queued copy on our behalf.
+            capture_->context()->Flush();
             readbacks_[size_t(free)] = {true, pendingKey_, pts};
             pendingKey_ = false;
         } else {
@@ -690,6 +696,8 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         auto out = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
         UINT slice = UINT(reinterpret_cast<uintptr_t>(frame_->data[1]));
         convert(t, out, slice);
+        // Submit the conversion before another API/device consumes the texture.
+        capture_->context()->Flush();
     } else {
         auto b = capture_->download(t);
         prepareCpu(b.data(), input_.w * 4);
@@ -889,7 +897,7 @@ void Muxer::close() {
 }
 static bool verifyContents(const std::filesystem::path& p,
                            const std::vector<size_t>* expected = nullptr,
-                           const std::vector<AVCodecID>* codecs = nullptr) {
+                           const std::vector<AVCodecID>* codecs = nullptr, bool fullScan = true) {
     AVFormatContext* ctx = nullptr;
     if (avformat_open_input(&ctx, utf8(p.wstring()).c_str(), nullptr, nullptr) < 0)
         return false;
@@ -911,21 +919,25 @@ static bool verifyContents(const std::filesystem::path& p,
     while (good && (ret = av_read_frame(ctx, packet)) >= 0) {
         if (packet->stream_index >= 0 && unsigned(packet->stream_index) < counts.size())
             ++counts[packet->stream_index];
+        const bool firstVideo = packet->stream_index == 0 && !fullScan;
+        if (firstVideo && !(packet->flags & AV_PKT_FLAG_KEY)) good = false;
         av_packet_unref(packet);
+        if (firstVideo) break;
     }
     // Audio is optional at runtime: an endpoint can be unavailable or the user
     // can record a very short clip before an audio encoder emits its first
     // packet. The video track is required for a useful recording; requiring
     // packets in every declared audio track incorrectly rejects such files.
-    good = good && ret == AVERROR_EOF && !counts.empty() && counts.front() > 0;
+    good = good && (ret == AVERROR_EOF || (!fullScan && ret >= 0)) &&
+           !counts.empty() && counts.front() > 0;
     if (expected)
         good = good && counts == *expected;
     av_packet_free(&packet);
     avformat_close_input(&ctx);
     return good;
 }
-bool verifyFile(const std::filesystem::path& p) {
-    return verifyContents(p);
+bool verifyFile(const std::filesystem::path& p, bool fullScan) {
+    return verifyContents(p, nullptr, nullptr, fullScan);
 }
 void remuxFile(const std::filesystem::path& source, const std::filesystem::path& target) {
     if (std::filesystem::exists(target))
@@ -1149,7 +1161,7 @@ void DiskWriter::exportRun() {
                 for (auto& packet : job.clip)
                     mux.write(packet);
                 mux.close();
-                if (!verifyFile(job.path))
+                if (!verifyFile(job.path, false))
                     throw std::runtime_error("Replay verification failed");
                 notify_("Replay saved", false);
             } else if (job.type == Job::Remux) {
@@ -1165,7 +1177,7 @@ void DiskWriter::exportRun() {
                     Log::get().write("Auto-remux complete and verified; recovery file removed");
                     notify_("Remux complete", false);
                 }
-            } else if (job.type == Job::Verify && !verifyFile(job.path)) {
+            } else if (job.type == Job::Verify && !verifyFile(job.path, false)) {
                 throw std::runtime_error("Recording failed packet verification; file retained");
             }
         } catch (const std::exception& error) {

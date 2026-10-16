@@ -3,6 +3,7 @@
 #include <avrt.h>
 #include <cmath>
 #include <psapi.h>
+#include <utility>
 namespace nco {
 Engine::Engine(std::function<void(std::string, bool)> notify) : notify_(std::move(notify)) {
     wake_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -77,7 +78,14 @@ EngineStats Engine::stats() {
 }
 Preview Engine::preview(uint64_t seen) {
     std::lock_guard lock(mutex_);
-    return seen == preview_.serial ? Preview{} : preview_;
+    if (seen == preview_.serial) return {};
+    Preview result{preview_.size, {}, preview_.serial};
+    result.pixels.swap(preview_.pixels);
+    return result;
+}
+bool Engine::previewChanged(uint64_t seen) {
+    std::lock_guard lock(mutex_);
+    return seen != preview_.serial;
 }
 void Engine::run(std::stop_token token) {
     FrameTimer frameTimer;
@@ -104,12 +112,21 @@ void Engine::run(std::stop_token token) {
             removed = 0, lastPreview = 0, lastUsage = 0;
     uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0, previousReadbackDrops = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
-    bool suspended = false, stoppingRecording = false, drainingVideo = false;
+    bool suspended = false, stoppingRecording = false, drainingVideo = false, previewDirty = true;
     int64_t stopCutoff = 0, stopRequested = 0, drainRequested = 0, latestVideoUs = -1;
     int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0;
     EngineStats local;
+    std::filesystem::path recordingPath;
+    bool recordingOutputOpen = false;
+    auto closeRecordingOutput = [&] {
+        if (recordingOutputOpen) {
+            disk.close();
+            recordingOutputOpen = false;
+        }
+    };
     Com<ID3D11Texture2D> texture;
     std::vector<Packet> recordingPreroll;
+    std::vector<float> micSamples, desktopSamples;
     std::function<void(std::vector<Packet>)> packets;
     auto endPipeline = [&](bool finalizeRecording = false) {
         if (video) {
@@ -128,9 +145,9 @@ void Engine::run(std::stop_token token) {
             // Hardware teardown can be slow even after all packets drained.
             // Finalize the container and clear the stop state before releasing
             // driver objects so the recording file is not held open by cleanup.
-            disk.close();
+            closeRecordingOutput();
             recording = paused = stoppingRecording = false;
-            local.ready = local.recording = local.paused = local.finishing = false;
+            local.ready = local.recording = local.paused = local.finishing = local.starting = false;
             local.durationUs = 0;
             std::lock_guard lock(mutex_);
             stats_ = local;
@@ -142,6 +159,22 @@ void Engine::run(std::stop_token token) {
         desktop.stop();
         tracks.clear();
         if (finalizeRecording) local.ready = bool(capture);
+    };
+    auto configureAudio = [&](const Config& next, bool force) {
+        if (force || next.mic != cfg.mic || next.micDevice != cfg.micDevice) {
+            if (next.mic)
+                mic.start(true, next.micDevice, [this](std::string e) { notify_(std::move(e), true); });
+            else mic.stop();
+            mt = AudioTimeline();
+            micFilter.reset();
+        }
+        if (force || next.desktop != cfg.desktop || next.desktopDevice != cfg.desktopDevice) {
+            if (next.desktop)
+                desktop.start(false, next.desktopDevice, [this](std::string e) { notify_(std::move(e), true); });
+            else desktop.stop();
+            dt = AudioTimeline();
+            desktopFilter.reset();
+        }
     };
     auto beginPipeline = [&] {
         if (video)
@@ -169,14 +202,8 @@ void Engine::run(std::stop_token token) {
         nextVideo = epoch;
         nextFrame = 0;
         audioPts = 0;
-        mt = AudioTimeline();
-        dt = AudioTimeline();
-        micFilter.reset();
-        desktopFilter.reset();
         ring.clear();
-        mic.start(true, cfg.micDevice, [this](std::string e) { notify_(std::move(e), true); });
-        desktop.start(false, cfg.desktopDevice,
-                      [this](std::string e) { notify_(std::move(e), true); });
+        configureAudio(cfg, true);
         local.encoder = video->selected();
         local.encoderAdapter = video->adapter();
         local.gpuTexturePath = video->gpu();
@@ -225,6 +252,11 @@ void Engine::run(std::stop_token token) {
                                      std::to_string((clockUs() - keyframeWaitStart) / 1000) +
                                      " encoder=" + local.encoder);
                     gate = false;
+                    if (!recordingOutputOpen) {
+                        disk.open(recordingPath, tracks, cfg.remux, cfg.format);
+                        recordingOutputOpen = true;
+                        recordStart = epoch + p.us() - removed;
+                    }
                     disk.write(p, removed);
                     for (auto& audioPacket : recordingPreroll)
                         if (audioPacket.us() >= p.us() && (!stoppingRecording || audioPacket.us() <= stopCutoff))
@@ -244,7 +276,7 @@ void Engine::run(std::stop_token token) {
             if (video) packets(video->collect(true));
         } catch (const std::exception&) {}
         recording = paused = replay = stoppingRecording = drainingVideo = false;
-        local.ready = local.recording = local.paused = local.replay = local.finishing = false;
+        local.ready = local.recording = local.paused = local.replay = local.finishing = local.starting = false;
         local.durationUs = 0;
         {
             std::lock_guard lock(mutex_);
@@ -252,7 +284,7 @@ void Engine::run(std::stop_token token) {
             config_.replay = false;
             stats_ = local;
         }
-        disk.close();
+        closeRecordingOutput();
         notify_("Pipeline stopped: " + error + "; recording file retained", true);
         video.reset();
         audio.clear();
@@ -321,20 +353,11 @@ void Engine::run(std::stop_token token) {
                     texture.Reset();
                     capture = std::make_unique<Capture>();
                     capture->open(src, current.captureBackend);
+                    previewDirty = true;
                     source = src;
                     local.ready = true;
                 }
-                if (video && (current.micDevice != cfg.micDevice ||
-                              current.desktopDevice != cfg.desktopDevice)) {
-                    mic.start(true, current.micDevice,
-                              [this](std::string e) { notify_(std::move(e), true); });
-                    desktop.start(false, current.desktopDevice,
-                                  [this](std::string e) { notify_(std::move(e), true); });
-                    mt = AudioTimeline();
-                    dt = AudioTimeline();
-                    micFilter.reset();
-                    desktopFilter.reset();
-                }
+                if (video) configureAudio(current, false);
                 cfg = current;
                 gen = newGen;
                 ring.seconds = cfg.replaySeconds;
@@ -358,8 +381,7 @@ void Engine::run(std::stop_token token) {
                     } else {
                         stoppingRecording = false;
                         beginPipeline();
-                        auto path = uniquePath(cfg.directory, "NCO_", cfg.format);
-                        disk.open(path, tracks, cfg.remux, cfg.format);
+                        recordingPath = uniquePath(cfg.directory, "NCO_", cfg.format);
                         recording = true;
                         paused = false;
                         gate = true;
@@ -381,14 +403,7 @@ void Engine::run(std::stop_token token) {
                         keyframeWaitStart = lastKeyframeRequest = clockUs();
                     }
                 } else if (action == AudioRefresh && video) {
-                    mic.start(true, cfg.micDevice,
-                              [this](std::string e) { notify_(std::move(e), true); });
-                    desktop.start(false, cfg.desktopDevice,
-                                  [this](std::string e) { notify_(std::move(e), true); });
-                    mt = AudioTimeline();
-                    dt = AudioTimeline();
-                    micFilter.reset();
-                    desktopFilter.reset();
+                    configureAudio(cfg, true);
                 } else if (action == ReplaySave) {
                     if (!replay) {
                         notify_("Enable replay in Recording settings first", true);
@@ -410,7 +425,7 @@ void Engine::run(std::stop_token token) {
             if (diskFailed_.exchange(false) && recording) {
                 recording = false;
                 paused = false;
-                disk.close();
+                closeRecordingOutput();
                 Log::get().write("Recording stopped after disk writer failure");
                 if (!replay)
                     endPipeline();
@@ -428,11 +443,11 @@ void Engine::run(std::stop_token token) {
                 recording = paused = gate = false;
                 stoppingRecording = false;
                 recordingPreroll.clear();
-                disk.close();
+                closeRecordingOutput();
                 Log::get().write("Recording output closed after keyframe wait failure");
                 if (!replay)
                     endPipeline();
-                local.recording = local.paused = local.finishing = false;
+                local.recording = local.paused = local.finishing = local.starting = false;
                 local.durationUs = 0;
                 notify_("Recording failed: encoder did not produce a keyframe. The capture pipeline remains available.", true);
             }
@@ -445,15 +460,23 @@ void Engine::run(std::stop_token token) {
             } else if (suspended && previewVisible && !capture) {
                 capture = std::make_unique<Capture>();
                 capture->open(source, cfg.captureBackend);
+                previewDirty = true;
                 suspended = false;
             }
             if (capture && source.window && !IsWindow(source.window))
                 throw std::runtime_error("The selected window closed. Select another source.");
-            if (capture && !drainingVideo && (video || (cfg.preview && visible_))) {
+            const int64_t previewInterval = video &&
+                (local.encodeMs > 800.0 / cfg.fps || (local.actualFps > 0 && local.actualFps < cfg.fps * .9))
+                ? 100000 : 33333;
+            const bool previewDue = previewVisible && !recording && now - lastPreview >= previewInterval;
+            // Audio and packet collection can wake more frequently than the
+            // requested video rate. Acquire/copy a source frame only when due.
+            if (capture && !drainingVideo && ((video && now >= nextVideo) || previewDue)) {
                 int64_t captureBegin = clockUs();
                 bool fresh = capture->frame(texture);
                 local.captureMs = local.captureMs * .9 + double(clockUs() - captureBegin) / 1000 * .1;
                 if (fresh) ++local.freshFrames;
+                previewDirty = previewDirty || fresh;
                 now = clockUs();
                 if (video && texture && now >= nextVideo) {
                     int64_t frameIndex = (now - epoch) * cfg.fps / 1000000;
@@ -470,9 +493,9 @@ void Engine::run(std::stop_token token) {
                         ++local.dropped;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }
-                if (cfg.preview && !recording && visible_ && texture && now - lastPreview >= (video ? (local.encodeMs > 800.0 / cfg.fps || (local.actualFps > 0 && local.actualFps < cfg.fps * .9) ? 100000 : 33333) : 16667)) {
+                if (previewDue && texture) {
                     try {
-                        auto p = capture->thumbnail(texture.Get());
+                        auto p = capture->thumbnail(texture.Get(), std::exchange(previewDirty, false));
                         if (!p.second.empty()) {
                         std::lock_guard lock(mutex_);
                         if (gen == generation_) {
@@ -510,7 +533,8 @@ void Engine::run(std::stop_token token) {
                 int frame = audio[0]->frameSize();
                 int iterations = 0;
                 while (audioPts + frame <= due && iterations++ < 12) {
-                    std::vector<float> m, d;
+                    auto& m = micSamples;
+                    auto& d = desktopSamples;
                     mt.read(audioPts, frame, cfg.mic ? cfg.micVolume * cfg.micGain / 10000.f : 0,
                             m);
                     dt.read(audioPts, frame, cfg.desktop ? cfg.desktopVolume / 100.f : 0, d);
@@ -537,13 +561,11 @@ void Engine::run(std::stop_token token) {
                         packets(audio[0]->encode(m, pts));
                         packets(audio[1]->encode(d, pts));
                     } else {
-                        for (size_t i = 0; i < m.size(); ++i)
-                            m[i] =
-                                std::abs(m[i] + d[i]) <= .9f
-                                    ? m[i] + d[i]
-                                    : std::copysign(
-                                          .9f + .1f * std::tanh((std::abs(m[i] + d[i]) - .9f) * 10),
-                                          m[i] + d[i]);
+                        for (size_t i = 0; i < m.size(); ++i) {
+                            const float sum = m[i] + d[i];
+                            m[i] = std::abs(sum) <= .9f ? sum :
+                                std::copysign(.9f + .1f * std::tanh((std::abs(sum) - .9f) * 10), sum);
+                        }
                         packets(audio[0]->encode(m, pts));
                     }
                     audioPts += frame;
@@ -611,19 +633,21 @@ void Engine::run(std::stop_token token) {
                     throw std::runtime_error("Encoder shutdown timed out. Completed packets were saved; restart NCO if the graphics driver remains unresponsive");
                 if ((replay && fenceReached) || (drainingVideo && video->finished())) {
                     if (!replay) endPipeline(true);
-                    else disk.close();
+                    else closeRecordingOutput();
                     recording = paused = stoppingRecording = false;
                     local.durationUs = 0;
                     gen = 0;
                 }
             }
             local.finishing = stoppingRecording && recording;
+            local.starting = recording && !recordingOutputOpen;
             local.recording = recording;
             local.paused = paused;
             local.replay = replay;
             local.replayBytes = ring.bytes();
-            if (recording)
+            if (recording && recordingOutputOpen)
                 local.durationUs = (paused ? pauseStart : stoppingRecording ? stopRequested : clockUs()) - recordStart - removed;
+            else local.durationUs = 0;
             {
                 std::lock_guard lock(mutex_);
                 stats_ = local;
@@ -631,7 +655,7 @@ void Engine::run(std::stop_token token) {
             int64_t waitUs = drainingVideo ? 10000 :
                 video ? (texture ? std::clamp(nextVideo - clockUs(), int64_t(1000), int64_t(10000))
                                  : 1000000 / cfg.fps)
-                      : 16667;
+                      : 33333;
             // High-resolution deadline wait; configuration/actions interrupt it immediately.
             if (!video && !previewVisible)
                 WaitForSingleObject(wake_, INFINITE);
@@ -651,7 +675,7 @@ void Engine::run(std::stop_token token) {
     try {
         endPipeline(recording);
         if (recording)
-            disk.close();
+            closeRecordingOutput();
     } catch (const std::exception& e) {
         notify_(e.what(), true);
     }

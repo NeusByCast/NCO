@@ -3,7 +3,8 @@
 #include "media.hpp"
 namespace nco {
 struct EngineStats {
-    bool recording = false, paused = false, replay = false, ready = false, gpu = false, finishing = false;
+    bool recording = false, paused = false, replay = false, ready = false, gpu = false, finishing = false,
+         starting = false;
     uint64_t frames = 0, dropped = 0, freshFrames = 0;
     size_t replayBytes = 0, encodeQueue = 0, readbackQueue = 0;
     uint64_t readbackDropped = 0;
@@ -51,6 +52,7 @@ class Engine {
     }
     EngineStats stats();
     Preview preview(uint64_t seen = 0);
+    bool previewChanged(uint64_t seen);
     void stop();
 };
 } // namespace nco

@@ -30,8 +30,8 @@ class Capture {
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession session_{nullptr};
     Com<ID3D11Texture2D> latest_, stage_, thumb_;
     std::array<Com<ID3D11Texture2D>, 3> thumbStages_;
-    std::array<bool, 3> thumbPending_{};
-    size_t thumbCursor_ = 0;
+    size_t thumbRead_ = 0, thumbWrite_ = 0, thumbCount_ = 0;
+    bool thumbDirty_ = false;
     Size size_, thumbSize_;
     Source source_;
     bool fallback_ = false, pointerFailed_ = false;
@@ -48,6 +48,9 @@ class Capture {
     Com<ID3D11VideoContext> thumbContext_;
     Com<ID3D11VideoProcessorEnumerator> thumbEnum_;
     Com<ID3D11VideoProcessor> thumbProcessor_;
+    Com<ID3D11VideoProcessorInputView> thumbInput_;
+    Com<ID3D11VideoProcessorOutputView> thumbOutput_;
+    ID3D11Texture2D* thumbInputTexture_ = nullptr;
 
   public:
     ~Capture();
@@ -66,6 +69,6 @@ class Capture {
         return fallback_;
     }
     std::vector<uint8_t> download(ID3D11Texture2D* texture);
-    std::pair<Size, std::vector<uint8_t>> thumbnail(ID3D11Texture2D* texture);
+    std::pair<Size, std::vector<uint8_t>> thumbnail(ID3D11Texture2D* texture, bool changed = true);
 };
 } // namespace nco

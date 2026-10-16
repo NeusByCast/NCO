@@ -459,9 +459,11 @@ std::vector<uint8_t> Capture::download(ID3D11Texture2D* texture) {
     context_->Unmap(stage_.Get(), 0);
     return out;
 }
-std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t) {
+std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t, bool changed) {
+    thumbDirty_ = thumbDirty_ || changed;
+    if (!thumb_ && !thumbDirty_) return {};
     if (!thumb_) {
-        const int width = std::min(1280, size_.w);
+        const int width = std::min(960, size_.w);
         thumbSize_ = {width, std::max(1, width * size_.h / size_.w)};
         check(device_.As(&thumbDevice_), "Preview video device");
         check(context_.As(&thumbContext_), "Preview video context");
@@ -471,62 +473,65 @@ std::pair<Size, std::vector<uint8_t>> Capture::thumbnail(ID3D11Texture2D* t) {
         desc.InputHeight = size_.h;
         desc.OutputWidth = thumbSize_.w;
         desc.OutputHeight = thumbSize_.h;
-        desc.InputFrameRate = {60, 1};
-        desc.OutputFrameRate = {60, 1};
+        desc.InputFrameRate = desc.OutputFrameRate = {30, 1};
         desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         check(thumbDevice_->CreateVideoProcessorEnumerator(&desc, &thumbEnum_), "Preview scaler");
-        check(thumbDevice_->CreateVideoProcessor(thumbEnum_.Get(), 0, &thumbProcessor_),
-              "Preview processor");
+        check(thumbDevice_->CreateVideoProcessor(thumbEnum_.Get(), 0, &thumbProcessor_), "Preview processor");
         D3D11_TEXTURE2D_DESC d{};
         d.Width = thumbSize_.w;
         d.Height = thumbSize_.h;
-        d.MipLevels = 1;
-        d.ArraySize = 1;
+        d.MipLevels = d.ArraySize = d.SampleDesc.Count = 1;
         d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        d.SampleDesc.Count = 1;
         d.BindFlags = D3D11_BIND_RENDER_TARGET;
         check(device_->CreateTexture2D(&d, nullptr, &thumb_), "Preview texture");
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
+        od.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        check(thumbDevice_->CreateVideoProcessorOutputView(thumb_.Get(), thumbEnum_.Get(), &od, &thumbOutput_), "Preview output");
         d.Usage = D3D11_USAGE_STAGING;
         d.BindFlags = 0;
         d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
         for (auto& stage : thumbStages_)
             check(device_->CreateTexture2D(&d, nullptr, &stage), "Preview staging");
+        RECT src{0, 0, size_.w, size_.h}, dst{0, 0, thumbSize_.w, thumbSize_.h};
+        thumbContext_->VideoProcessorSetStreamSourceRect(thumbProcessor_.Get(), 0, TRUE, &src);
+        thumbContext_->VideoProcessorSetStreamDestRect(thumbProcessor_.Get(), 0, TRUE, &dst);
     }
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
-    id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    Com<ID3D11VideoProcessorInputView> iv;
-    check(thumbDevice_->CreateVideoProcessorInputView(t, thumbEnum_.Get(), &id, &iv),
-          "Preview input");
-    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC od{};
-    od.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-    Com<ID3D11VideoProcessorOutputView> ov;
-    check(thumbDevice_->CreateVideoProcessorOutputView(thumb_.Get(), thumbEnum_.Get(), &od, &ov),
-          "Preview output");
-    RECT src{0, 0, size_.w, size_.h}, dst{0, 0, thumbSize_.w, thumbSize_.h};
-    thumbContext_->VideoProcessorSetStreamSourceRect(thumbProcessor_.Get(), 0, TRUE, &src);
-    thumbContext_->VideoProcessorSetStreamDestRect(thumbProcessor_.Get(), 0, TRUE, &dst);
-    D3D11_VIDEO_PROCESSOR_STREAM s{};
-    s.Enable = TRUE;
-    s.pInputSurface = iv.Get();
-    check(thumbContext_->VideoProcessorBlt(thumbProcessor_.Get(), ov.Get(), 0, 1, &s),
-          "Scale preview");
-    context_->CopyResource(thumbStages_[thumbCursor_].Get(), thumb_.Get());
-    thumbPending_[thumbCursor_] = true;
-    thumbCursor_ = (thumbCursor_ + 1) % thumbStages_.size();
-    if (!thumbPending_[thumbCursor_])
-        return {};
-    auto stage = thumbStages_[thumbCursor_].Get();
-    D3D11_MAPPED_SUBRESOURCE m{};
-    const HRESULT mapped = context_->Map(stage, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
-    if (mapped == DXGI_ERROR_WAS_STILL_DRAWING)
-        return {};
-    check(mapped, "Preview map");
-    std::vector<uint8_t> b(size_t(thumbSize_.w) * thumbSize_.h * 4);
-    for (int y = 0; y < thumbSize_.h; ++y)
-        memcpy(b.data() + size_t(y) * thumbSize_.w * 4,
-               static_cast<uint8_t*>(m.pData) + size_t(y) * m.RowPitch, size_t(thumbSize_.w) * 4);
-    context_->Unmap(stage, 0);
-    thumbPending_[thumbCursor_] = false;
-    return {thumbSize_, std::move(b)};
+    std::vector<uint8_t> pixels;
+    if (thumbCount_) {
+        auto stage = thumbStages_[thumbRead_].Get();
+        D3D11_MAPPED_SUBRESOURCE m{};
+        const HRESULT mapped = context_->Map(stage, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+        if (mapped != DXGI_ERROR_WAS_STILL_DRAWING) {
+            check(mapped, "Preview map");
+            try { pixels.resize(size_t(thumbSize_.w) * thumbSize_.h * 4); }
+            catch (...) { context_->Unmap(stage, 0); throw; }
+            for (int y = 0; y < thumbSize_.h; ++y)
+                memcpy(pixels.data() + size_t(y) * thumbSize_.w * 4,
+                       static_cast<uint8_t*>(m.pData) + size_t(y) * m.RowPitch, size_t(thumbSize_.w) * 4);
+            context_->Unmap(stage, 0);
+            thumbRead_ = (thumbRead_ + 1) % thumbStages_.size();
+            --thumbCount_;
+        }
+    }
+    // Never overwrite a staging slot that the GPU is still writing.
+    if (thumbDirty_ && thumbCount_ < thumbStages_.size()) {
+        if (t != thumbInputTexture_) {
+            thumbInput_.Reset();
+            D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC id{};
+            id.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+            check(thumbDevice_->CreateVideoProcessorInputView(t, thumbEnum_.Get(), &id, &thumbInput_), "Preview input");
+            thumbInputTexture_ = t;
+        }
+        D3D11_VIDEO_PROCESSOR_STREAM stream{};
+        stream.Enable = TRUE;
+        stream.pInputSurface = thumbInput_.Get();
+        check(thumbContext_->VideoProcessorBlt(thumbProcessor_.Get(), thumbOutput_.Get(), 0, 1, &stream), "Scale preview");
+        context_->CopyResource(thumbStages_[thumbWrite_].Get(), thumb_.Get());
+        context_->Flush();
+        thumbWrite_ = (thumbWrite_ + 1) % thumbStages_.size();
+        ++thumbCount_;
+        thumbDirty_ = false;
+    }
+    return {thumbSize_, std::move(pixels)};
 }
 } // namespace nco

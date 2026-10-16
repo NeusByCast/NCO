@@ -33,6 +33,7 @@ class AudioTimeline {
     }
     void read(int64_t sample, int count, float gain, std::vector<float>& out) const {
         out.assign(size_t(count) * 2, 0);
+        if (gain == 0) return;
         for (int i = 0; i < count; ++i) {
             const int64_t s = sample + i;
             if (s < 0)

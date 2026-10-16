@@ -244,6 +244,16 @@ void UI::smokeControls() {
             require(!toastVisible_, "Toast did not expire after one second");
             report << "PASS toast lifetime and animation without repainting a static page\n";
         }
+        page(1);
+        draw();
+        const auto layouts = textLayouts_;
+        for (int i = 0; i < 12; ++i) draw();
+        require(textLayouts_.size() == layouts.size() && textLayouts_.size() <= 256,
+                "Repeated static paints grew the bounded text cache");
+        for (const auto& [key, layout] : layouts)
+            require(textLayouts_.at(key).Get() == layout.Get(),
+                    "Repeated paints rebuilt a stable text layout");
+        report << "PASS static controls reuse cached DirectWrite layouts without cache growth\n";
         page(0);
         clickControl(L"max");
         require(IsZoomed(hwnd_) != FALSE, "Maximize button failed");

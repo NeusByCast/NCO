@@ -74,7 +74,7 @@ void AudioCapture::start(bool input, std::wstring id, std::function<void(std::st
                 WaitForSingleObject(event, 50);
                 UINT32 count = 0;
                 check(capture->GetNextPacketSize(&count), "Audio packet size");
-                while (count) {
+                while (count && !token.stop_requested()) {
                     BYTE* data = nullptr;
                     UINT32 frames = 0;
                     DWORD f = 0;
