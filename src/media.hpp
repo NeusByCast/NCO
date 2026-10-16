@@ -61,7 +61,7 @@ class VideoEncoder {
     struct ReadbackJob { bool pending = false, key = false; int64_t pts = 0; };
     std::array<ReadbackJob, 3> readbacks_{};
     bool pendingKey_ = false;
-    bool drainReadback(bool wait, std::vector<Packet>& output);
+    bool drainReadback(std::vector<Packet>& output);
     bool nv12Readback_ = false;
     void convert(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT slice);
 

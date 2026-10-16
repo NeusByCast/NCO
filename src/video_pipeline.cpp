@@ -2,8 +2,9 @@
 #include <avrt.h>
 namespace nco {
 VideoPipeline::VideoPipeline(const Config& config, Capture* capture, Size input,
-                             bool synthetic, int testDelayMs)
-    : capture_(capture), synthetic_(synthetic), testDelayMs_(testDelayMs) {
+                             bool synthetic, int testDelayMs, bool testFlushFailure)
+    : capture_(capture), synthetic_(synthetic), testFlushFailure_(testFlushFailure),
+      testDelayMs_(testDelayMs) {
     encoder_.open(config, capture, input, synthetic);
     if (!synthetic) {
         D3D11_TEXTURE2D_DESC desc{};
@@ -86,6 +87,8 @@ void VideoPipeline::run() {
                 metrics_.encodeMs = metrics_.encodeMs * .9 + elapsed * .1;
             }
         }
+        if (synthetic_ && testFlushFailure_)
+            throw std::runtime_error("Injected encoder drain failure");
         publish(encoder_.flush());
         std::lock_guard lock(mutex_);
         metrics_.frames = encoder_.submittedFrames;
@@ -97,21 +100,34 @@ void VideoPipeline::run() {
     }
     if (mm) AvRevertMmThreadCharacteristics(mm);
     CoUninitialize();
+    {
+        std::lock_guard lock(mutex_);
+        finished_ = true;
+    }
 }
-std::vector<Packet> VideoPipeline::collect() {
+std::vector<Packet> VideoPipeline::collect(bool recoverOnError) {
     std::lock_guard lock(mutex_);
-    if (error_) std::rethrow_exception(error_);
+    // The engine's error path can recover completed packets before closing
+    // the file, without masking a drain error during normal operation.
+    if (error_ && !recoverOnError) std::rethrow_exception(error_);
     std::vector<Packet> result;
     result.swap(packets_);
     packetBytes_ = 0;
     return result;
 }
-std::vector<Packet> VideoPipeline::flush() {
+void VideoPipeline::finish() {
     {
         std::lock_guard lock(mutex_);
         finishing_ = true;
     }
     cv_.notify_one();
+}
+bool VideoPipeline::finished() {
+    std::lock_guard lock(mutex_);
+    return finished_;
+}
+std::vector<Packet> VideoPipeline::flush() {
+    finish();
     if (thread_.joinable()) thread_.join();
     return collect();
 }

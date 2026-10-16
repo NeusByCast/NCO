@@ -6,6 +6,7 @@
 /nco-self-test/
 *.user
 *.pdb
+__pycache__/
 /assets/nco.ico
 /assets/nco.png
 /assets/wizard*.bmp

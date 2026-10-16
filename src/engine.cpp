@@ -104,14 +104,14 @@ void Engine::run(std::stop_token token) {
             removed = 0, lastPreview = 0, lastUsage = 0;
     uint64_t lastCpu = 0, usageFrames = 0, videoBytes = 0, usageBytes = 0, previousReadbackDrops = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
-    bool suspended = false, stoppingRecording = false;
-    int64_t stopCutoff = 0, stopRequested = 0, latestVideoUs = -1;
+    bool suspended = false, stoppingRecording = false, drainingVideo = false;
+    int64_t stopCutoff = 0, stopRequested = 0, drainRequested = 0, latestVideoUs = -1;
     int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0;
     EngineStats local;
     Com<ID3D11Texture2D> texture;
     std::vector<Packet> recordingPreroll;
     std::function<void(std::vector<Packet>)> packets;
-    auto endPipeline = [&] {
+    auto endPipeline = [&](bool finalizeRecording = false) {
         if (video) {
             Log::get().write("Finalizing video encoder and draining queued frames");
             packets(video->flush());
@@ -124,11 +124,24 @@ void Engine::run(std::stop_token token) {
         if (video)
             Log::get().write("Pipeline finalized frames=" + std::to_string(local.frames) +
                              " dropped=" + std::to_string(local.dropped));
+        if (finalizeRecording) {
+            // Hardware teardown can be slow even after all packets drained.
+            // Finalize the container and clear the stop state before releasing
+            // driver objects so the recording file is not held open by cleanup.
+            disk.close();
+            recording = paused = stoppingRecording = false;
+            local.ready = local.recording = local.paused = local.finishing = false;
+            local.durationUs = 0;
+            std::lock_guard lock(mutex_);
+            stats_ = local;
+        }
         video.reset();
+        drainingVideo = false;
         audio.clear();
         mic.stop();
         desktop.stop();
         tracks.clear();
+        if (finalizeRecording) local.ready = bool(capture);
     };
     auto beginPipeline = [&] {
         if (video)
@@ -222,6 +235,33 @@ void Engine::run(std::stop_token token) {
                 disk.write(p, removed);
             }
         }
+    };
+    auto failPipeline = [&](const std::string& error) {
+        Log::get().write("Pipeline error: " + error);
+        // Keep packets completed before a later encoder failure, then close the
+        // file before releasing the encoder/driver resources.
+        try {
+            if (video) packets(video->collect(true));
+        } catch (const std::exception&) {}
+        recording = paused = replay = stoppingRecording = drainingVideo = false;
+        local.ready = local.recording = local.paused = local.replay = local.finishing = false;
+        local.durationUs = 0;
+        {
+            std::lock_guard lock(mutex_);
+            gen = generation_;
+            config_.replay = false;
+            stats_ = local;
+        }
+        disk.close();
+        notify_("Pipeline stopped: " + error + "; recording file retained", true);
+        video.reset();
+        audio.clear();
+        mic.stop();
+        desktop.stop();
+        ring.clear();
+        capture.reset();
+        suspended = false;
+        texture.Reset();
     };
     while (!token.stop_requested()) {
         try {
@@ -376,13 +416,13 @@ void Engine::run(std::stop_token token) {
                     endPipeline();
             }
             int64_t now = clockUs();
-            if (recording && !paused && gate && now - lastKeyframeRequest >= 500000) {
+            if (recording && !paused && !stoppingRecording && gate && now - lastKeyframeRequest >= 500000) {
                 // Some hardware encoders can miss a forced-frame request while
                 // their asynchronous queue is starting. Retry at a low rate.
                 forceKey = true;
                 lastKeyframeRequest = now;
             }
-            if (recording && !paused && gate && keyframeWaitStart &&
+            if (recording && !paused && !stoppingRecording && gate && keyframeWaitStart &&
                 now - keyframeWaitStart >= 10000000) {
                 Log::get().write("Recording aborted: encoder produced no decodable keyframe after repeated IDR requests");
                 recording = paused = gate = false;
@@ -409,7 +449,7 @@ void Engine::run(std::stop_token token) {
             }
             if (capture && source.window && !IsWindow(source.window))
                 throw std::runtime_error("The selected window closed. Select another source.");
-            if (capture && (video || (cfg.preview && visible_))) {
+            if (capture && !drainingVideo && (video || (cfg.preview && visible_))) {
                 int64_t captureBegin = clockUs();
                 bool fresh = capture->frame(texture);
                 local.captureMs = local.captureMs * .9 + double(clockUs() - captureBegin) / 1000 * .1;
@@ -556,17 +596,26 @@ void Engine::run(std::stop_token token) {
                                          " desktop_discontinuities=" + std::to_string(desktop.discontinuities.load()),
                                      false);
             }
-            if (stoppingRecording && recording &&
-                ((latestVideoUs >= stopCutoff &&
-                  audioPts * 1000000 / 48000 + int64_t(cfg.audioOffsetMs) * 1000 >= stopCutoff) ||
-                 clockUs() - stopRequested >= 2000000)) {
-                if (!replay) endPipeline();
-                disk.close();
-                recording = false;
-                paused = false;
-                stoppingRecording = false;
-                local.durationUs = 0;
-                gen = 0;
+            if (stoppingRecording && recording) {
+                const bool fenceReached =
+                    (latestVideoUs >= stopCutoff &&
+                     audioPts * 1000000 / 48000 + int64_t(cfg.audioOffsetMs) * 1000 >= stopCutoff) ||
+                    clockUs() - stopRequested >= 2000000;
+                if (!replay && fenceReached && !drainingVideo) {
+                    Log::get().write("Recording fence reached; requesting asynchronous encoder drain");
+                    video->finish();
+                    drainingVideo = true;
+                    drainRequested = clockUs();
+                }
+                if (drainingVideo && !video->finished() && clockUs() - drainRequested >= 12000000)
+                    throw std::runtime_error("Encoder shutdown timed out. Completed packets were saved; restart NCO if the graphics driver remains unresponsive");
+                if ((replay && fenceReached) || (drainingVideo && video->finished())) {
+                    if (!replay) endPipeline(true);
+                    else disk.close();
+                    recording = paused = stoppingRecording = false;
+                    local.durationUs = 0;
+                    gen = 0;
+                }
             }
             local.finishing = stoppingRecording && recording;
             local.recording = recording;
@@ -579,7 +628,7 @@ void Engine::run(std::stop_token token) {
                 std::lock_guard lock(mutex_);
                 stats_ = local;
             }
-            int64_t waitUs =
+            int64_t waitUs = drainingVideo ? 10000 :
                 video ? (texture ? std::clamp(nextVideo - clockUs(), int64_t(1000), int64_t(10000))
                                  : 1000000 / cfg.fps)
                       : 16667;
@@ -594,53 +643,13 @@ void Engine::run(std::stop_token token) {
                 WaitForSingleObject(wake_, DWORD(std::max<int64_t>(1, waitUs / 1000)));
 
         } catch (const winrt::hresult_error& e) {
-            std::string error = utf8(e.message().c_str());
-            Log::get().write("Capture error: " + error);
-            notify_("Pipeline stopped: " + error, true);
-            recording = false;
-            paused = false;
-            replay = false;
-            video.reset();
-            audio.clear();
-            mic.stop();
-            desktop.stop();
-            disk.close();
-            capture.reset();
-            suspended = false;
-            texture.Reset();
-            std::lock_guard lock(mutex_);
-            gen = generation_;
-            config_.replay = false;
-            local.ready = false;
-            local.recording = false;
-            local.replay = false;
-            stats_ = local;
+            failPipeline(utf8(e.message().c_str()));
         } catch (const std::exception& e) {
-            Log::get().write(std::string("Pipeline error: ") + e.what());
-            notify_(std::string("Pipeline stopped: ") + e.what(), true);
-            recording = false;
-            paused = false;
-            replay = false;
-            video.reset();
-            audio.clear();
-            mic.stop();
-            desktop.stop();
-            disk.close();
-            ring.clear();
-            capture.reset();
-            suspended = false;
-            texture.Reset();
-            std::lock_guard lock(mutex_);
-            gen = generation_;
-            config_.replay = false;
-            local.ready = false;
-            local.recording = false;
-            local.replay = false;
-            stats_ = local;
+            failPipeline(e.what());
         }
     }
     try {
-        endPipeline();
+        endPipeline(recording);
         if (recording)
             disk.close();
     } catch (const std::exception& e) {

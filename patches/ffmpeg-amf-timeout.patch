@@ -1,0 +1,37 @@
+--- a/libavcodec/amfenc.c
++++ b/libavcodec/amfenc.c
+@@ -587,6 +587,7 @@
+     AVFrame    *frame = av_frame_alloc();
+     int         block_and_wait;
+     int64_t     pts = 0;
++    const int64_t wait_start = av_gettime_relative();
+     int output_delay = FFMAX(ctx->max_b_frames, 0) + ((avctx->flags & AV_CODEC_FLAG_LOW_DELAY) ? 0 : 1);
+ 
+     if (!ctx->encoder){
+@@ -638,6 +639,14 @@
+     av_frame_free(&frame);
+ 
+     do {
++        /* A driver that never returns AMF_EOF must not trap the recorder in
++         * this polling loop forever. Preserve packets returned on earlier calls. */
++        if (av_gettime_relative() - wait_start >= 5000000) {
++            if (surface)
++                surface->pVtbl->Release(surface);
++            av_log(avctx, AV_LOG_ERROR, "AMF output/drain timed out after 5 seconds\n");
++            return AVERROR(ETIMEDOUT);
++        }
+         block_and_wait = 0;
+         // poll data
+         res_query = amf_query_output(avctx, &buffer);
+@@ -675,6 +684,11 @@
+         if(surface) {
+             // resubmit surface
+             do {
++                if (av_gettime_relative() - wait_start >= 5000000) {
++                    surface->pVtbl->Release(surface);
++                    av_log(avctx, AV_LOG_ERROR, "AMF input queue timed out after 5 seconds\n");
++                    return AVERROR(ETIMEDOUT);
++                }
+                 res = ctx->encoder->pVtbl->SubmitInput(ctx->encoder, (AMFData*)surface);
+                 if (res != AMF_INPUT_FULL)
+                     break;

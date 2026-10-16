@@ -28,13 +28,14 @@ Use Visual Studio 2022 C++ desktop tools, Windows SDK 10.0.19041+, CMake 3.25+, 
 
 ```powershell
 python tools/icon.py
-cmake -S . -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows-nco" "-DVCPKG_OVERLAY_TRIPLETS=triplets"
+python tools/prepare_vcpkg.py <vcpkg> build/vcpkg-overlay
+cmake -S . -B build -A x64 "-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake" "-DVCPKG_TARGET_TRIPLET=x64-windows-nco" "-DVCPKG_OVERLAY_TRIPLETS=triplets" "-DVCPKG_OVERLAY_PORTS=build/vcpkg-overlay"
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure
 build/Release/NCO.exe --self-test
 ```
 
-The Actions workflow prepares licenses, corresponding source and distribution files, compiles `installer/nco.iss`, tests the installer, and publishes a tested prerelease. Outputs are under `output/NCO-Setup.exe`. Static linkage includes GPL x264; NCO and its combined binary are GPLv3-or-later.
+The Actions workflow prepares licenses, corresponding source and distribution files, compiles `installer/nco.iss`, tests the installer, and uploads the Windows setup as a GitHub Actions artifact. Outputs are under `output/NCO-Setup.exe`. Static linkage includes GPL x264; NCO and its combined binary are GPLv3-or-later.
 
 Portable core checks on Linux:
 

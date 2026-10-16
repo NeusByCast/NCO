@@ -343,14 +343,48 @@ int mediaSelfTest() {
             require(pipeline.submit(nullptr, 1, false), "Second encoder mailbox rejected");
             require(!pipeline.submit(nullptr, 2, false), "Encoder mailbox limit was not enforced");
             require(clockUs() - begin < 100000, "Capture waited on a slow encoder");
-            auto encoded = pipeline.flush();
+            const auto finishBegin = clockUs();
+            pipeline.finish();
+            require(clockUs() - finishBegin < 100000,
+                    "Stop request waited on the encoder worker");
+            require(!pipeline.submit(nullptr, 2, false),
+                    "Encoder accepted a frame after the drain request");
+            std::vector<Packet> encoded;
+            const auto deadline = clockUs() + 3000000;
+            while (!pipeline.finished() && clockUs() < deadline) {
+                auto ready = pipeline.collect();
+                encoded.insert(encoded.end(), ready.begin(), ready.end());
+                Sleep(5);
+            }
+            require(pipeline.finished(), "Encoder did not finish within its drain deadline");
+            auto tail = pipeline.flush();
+            encoded.insert(encoded.end(), tail.begin(), tail.end());
             require(encoded.size() == 2 && pipeline.metrics().frames == 2,
                     "Worker finalization lost accepted frames");
             require(encoded[0].p->pts < encoded[1].p->pts,
                     "Worker changed video timestamp order");
             require(track.par->codec_type == AVMEDIA_TYPE_VIDEO, "Worker metadata missing");
         }
-        report << "PASS bounded encoder worker: slow encode does not block submission; overflow rejected; accepted frames drain with ordered timestamps\n";
+        {
+            Config config;
+            config.encoder = "libx264";
+            VideoPipeline pipeline(config, nullptr, {320, 180}, true, 0, true);
+            require(pipeline.submit(nullptr, 0, true), "Recovery test frame rejected");
+            pipeline.finish();
+            const auto deadline = clockUs() + 3000000;
+            while (!pipeline.finished() && clockUs() < deadline) Sleep(5);
+            require(pipeline.finished(), "Failed drain did not signal completion");
+            bool failed = false;
+            try { pipeline.collect(); }
+            catch (const std::runtime_error& error) {
+                failed = std::string(error.what()) == "Injected encoder drain failure";
+            }
+            require(failed, "Encoder drain failure was hidden");
+            auto recovered = pipeline.collect(true);
+            require(recovered.size() == 1 && recovered.front().key(),
+                    "Drain failure lost the completed recording packet");
+        }
+        report << "PASS bounded encoder worker: asynchronous stop, ordered accepted frames, drain failure reporting and completed-packet recovery\n";
         for (const auto& format : {"mp4", "mkv", "mov", "webm"}) {
             containerTest(dir, format);
             report << "PASS " << format

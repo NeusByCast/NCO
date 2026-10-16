@@ -343,7 +343,7 @@ void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
         t.to = float(value);
         t.start = clockUs();
         if (cfg_.animations)
-            SetTimer(hwnd_, 2, 16, nullptr);
+            SetTimer(hwnd_, 2, 33, nullptr);
     }
     float p = cfg_.animations ? ease(float(clockUs() - t.start) / 150000) : 1;
     float v = t.from + (t.to - t.from) * p;
@@ -358,7 +358,7 @@ void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selecte
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
     popup_.owner = pressed_;
     popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - popup_.visible));
-    SetTimer(hwnd_, 2, 16, nullptr);
+    SetTimer(hwnd_, 2, 33, nullptr);
     invalidate();
 }
 void UI::edit(std::wstring value, D2D1_RECT_F r, std::function<void(std::wstring)> accept,
@@ -967,7 +967,7 @@ void UI::dismissPopup() {
     else {
         popup_.closing = true;
         popup_.closeStart = clockUs();
-        SetTimer(hwnd_, 2, 16, nullptr);
+        SetTimer(hwnd_, 2, 33, nullptr);
     }
     invalidate();
 }
@@ -1019,7 +1019,7 @@ void UI::draw() {
                 popup_.open = false;
                 navigationStart_ = clockUs();
                 if (cfg_.animations)
-                    SetTimer(hwnd_, 2, 16, nullptr);
+                    SetTimer(hwnd_, 2, 33, nullptr);
                 invalidate();
             },
             page_ == i, true,
@@ -1216,7 +1216,7 @@ void UI::toast(std::wstring msg) {
                       monitor.rcWork.top + int(12 * toastDpi_ / 96)};
     toastStart_ = clockUs();
     toastVisible_ = true;
-    SetTimer(hwnd_, 2, 16, nullptr);
+    SetTimer(hwnd_, 2, 33, nullptr);
 }
 LRESULT CALLBACK UI::toastProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_ERASEBKGND) return 1;
@@ -1391,7 +1391,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             hover_ = id;
             hoverStart_ = clockUs();
             if (cfg_.animations)
-                SetTimer(h, 2, 16, nullptr);
+                SetTimer(h, 2, 33, nullptr);
             invalidate();
         }
         return 0;

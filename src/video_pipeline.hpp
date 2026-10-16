@@ -15,7 +15,7 @@ class VideoPipeline {
     std::mutex mutex_;
     std::condition_variable cv_;
     std::thread thread_;
-    bool finishing_ = false, synthetic_ = false;
+    bool finishing_ = false, finished_ = false, synthetic_ = false, testFlushFailure_ = false;
     int testDelayMs_ = 0;
     std::exception_ptr error_;
     void run();
@@ -30,14 +30,16 @@ class VideoPipeline {
     Metrics metrics_;
   public:
     VideoPipeline(const Config& config, Capture* capture, Size input,
-                  bool synthetic = false, int testDelayMs = 0);
+                  bool synthetic = false, int testDelayMs = 0, bool testFlushFailure = false);
     ~VideoPipeline();
     Track track() const { return encoder_.track(); }
     const std::string& selected() const { return encoder_.selected; }
     const std::string& adapter() const { return encoder_.selectedAdapter; }
     bool gpu() const { return encoder_.gpu(); }
     bool submit(ID3D11Texture2D* texture, int64_t pts, bool key);
-    std::vector<Packet> collect();
+    std::vector<Packet> collect(bool recoverOnError = false);
+    void finish();
+    bool finished();
     std::vector<Packet> flush();
     Metrics metrics();
 };

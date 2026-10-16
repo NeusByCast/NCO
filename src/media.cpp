@@ -615,7 +615,7 @@ void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice)
     check(vc_->VideoProcessorBlt(processor_.Get(), ov.Get(), 0, 1, &stream),
           "GPU scale and NV12 conversion");
 }
-bool VideoEncoder::drainReadback(bool wait, std::vector<Packet>& output) {
+bool VideoEncoder::drainReadback(std::vector<Packet>& output) {
     int index = -1;
     for (int i = 0; i < int(readbacks_.size()); ++i)
         if (readbacks_[size_t(i)].pending &&
@@ -627,7 +627,7 @@ bool VideoEncoder::drainReadback(bool wait, std::vector<Packet>& output) {
     D3D11_MAPPED_SUBRESOURCE map{};
     const auto begin = clockUs();
     const HRESULT mapped = capture_->context()->Map(stage, 0, D3D11_MAP_READ,
-        wait ? 0 : D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+        D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
     if (mapped == DXGI_ERROR_WAS_STILL_DRAWING) return false;
     check(mapped, "Asynchronous NV12 readback");
     try {
@@ -666,7 +666,7 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
     if (nv12Readback_) {
         pendingKey_ = pendingKey_ || key;
         std::vector<Packet> output;
-        while (drainReadback(false, output)) {}
+        while (drainReadback(output)) {}
         int free = -1;
         for (int i = 0; i < int(readbacks_.size()); ++i)
             if (!readbacks_[size_t(i)].pending) { free = i; break; }
@@ -678,7 +678,7 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         } else {
             ++readbackDrops;
         }
-        while (drainReadback(false, output)) {}
+        while (drainReadback(output)) {}
         auto ready = receive(codec_, 0);
         output.insert(output.end(), std::make_move_iterator(ready.begin()),
                       std::make_move_iterator(ready.end()));
@@ -730,8 +730,23 @@ std::vector<Packet> VideoEncoder::synthetic(int64_t pts, bool key) {
 }
 std::vector<Packet> VideoEncoder::flush() {
     std::vector<Packet> output;
-    if (nv12Readback_)
-        while (drainReadback(true, output)) {}
+    if (nv12Readback_) {
+        capture_->context()->Flush();
+        const auto deadline = clockUs() + 2000000;
+        while (pendingReadbacks()) {
+            if (drainReadback(output)) continue;
+            if (clockUs() >= deadline) {
+                Log::get().write("GPU readback drain timed out; retaining encoded video and dropping " +
+                                 std::to_string(pendingReadbacks()) + " pending frames");
+                for (auto& job : readbacks_) {
+                    if (job.pending) ++readbackDrops;
+                    job.pending = false;
+                }
+                break;
+            }
+            Sleep(1);
+        }
+    }
     auto tail = send(nullptr);
     output.insert(output.end(), std::make_move_iterator(tail.begin()), std::make_move_iterator(tail.end()));
     return output;
