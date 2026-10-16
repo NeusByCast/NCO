@@ -16,7 +16,7 @@ Settings shows detected GPU adapters and memory, live process CPU/RAM use, encod
 
 Automatic remuxing records to a recoverable MKV and stream-copies to MP4/MOV/WebM after stopping; source is removed only after output verification. Recovery files remain if remux fails. WebM requires AV1 or VP9 and Opus; unavailable encoders are not offered. Auto selects compatible hardware, then software.
 
-Replay clips use the recording folder with a `Replay_` filename prefix. The five pages are Dashboard, Recording, Audio, Hotkeys and Settings. Preview is up to 1280 pixels wide, at 60 FPS idle / 30 FPS while encoding; animation rendering remains independent. Preview and animations stay enabled; preview capture/rendering pauses while minimized. Notifications last one second at the top-right.
+Replay clips use the recording folder with a `Replay_` filename prefix. The five pages are Dashboard, Recording, Audio, Hotkeys and Settings. Preview is up to 1280 pixels wide, at 60 FPS idle / 30 FPS while encoding, reduced to 10 FPS when encoding approaches its frame budget; animation rendering remains independent. Preview and animations stay enabled; preview capture/rendering pauses while minimized. Notifications last one second at the top-right.
 
 Auto capture prefers Desktop Duplication for displays/regions, avoiding the Windows capture outline. Window capture uses WGC; border suppression depends on Windows permission/support. Preview targets 60 FPS using asynchronous thumbnail readback and an independent high-resolution UI timer. Hardware/driver load can reduce actual FPS.
 

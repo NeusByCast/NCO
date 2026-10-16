@@ -98,7 +98,7 @@ jobs:
           $p = Start-Process "$root/NCO.exe" -ArgumentList "--self-test" -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "Installed self-test failed: $($p.ExitCode)" }
           $p = Start-Process "$root/NCO.exe" -ArgumentList "--ui-smoke-test" -PassThru -Wait
-          if ($p.ExitCode -ne 0) { throw "UI launch failed" }
+          if ($p.ExitCode -ne 0) { Get-Content nco-self-test/ui-results.txt; throw "UI launch failed" }
           $start = @("$env:APPDATA/Microsoft/Windows/Start Menu/Programs/NCO/NCO.lnk", "$env:ProgramData/Microsoft/Windows/Start Menu/Programs/NCO/NCO.lnk")
           if (!($start | Where-Object { Test-Path $_ })) { throw "Start Menu shortcut absent" }
           $desktop = @("$env:USERPROFILE/Desktop/NCO.lnk", "$env:PUBLIC/Desktop/NCO.lnk")
@@ -130,4 +130,4 @@ jobs:
         shell: pwsh
         run: |
           $tag = "preview-${{ github.run_number }}"
-          gh release create $tag output/NCO-Setup.exe NCO-Corresponding-Source.zip --target "${{ github.sha }}" --title "NCO 0.2 preview — Windows validation required" --prerelease --notes-file RELEASE_NOTES.md
+          gh release create $tag output/NCO-Setup.exe NCO-Corresponding-Source.zip --target "${{ github.sha }}" --title "NCO 0.3 preview — Windows validation required" --prerelease --notes-file RELEASE_NOTES.md

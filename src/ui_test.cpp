@@ -80,13 +80,17 @@ void UI::smokeControls() {
         stats_.recording = false;
         stats_.replay = true;
         controls_.clear();
+        target_->BeginDraw();
         settings();
+        check(target_->EndDraw(), "Replay settings regression rendering");
         require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
             return control.id == L"fps" && control.enabled;
         }), "Replay incorrectly locks Recording settings");
         stats_.recording = true;
         controls_.clear();
+        target_->BeginDraw();
         settings();
+        check(target_->EndDraw(), "Replay settings regression rendering");
         require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
             return control.id == L"fps" && !control.enabled;
         }), "Active recording must protect its encoder configuration");

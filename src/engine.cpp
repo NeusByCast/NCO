@@ -157,6 +157,8 @@ void Engine::run(std::stop_token token) {
         desktop.start(false, cfg.desktopDevice,
                       [this](std::string e) { notify_(std::move(e), true); });
         local.encoder = video->selected;
+        local.encoderAdapter = video->selectedAdapter;
+        local.gpuTexturePath = video->gpu();
         local.gpu = video->selected.find("lib") != 0;
         local.frames = local.dropped = local.freshFrames = 0;
         local.encodeMs = local.captureMs = local.prepareMs = local.submitMs = local.actualFps = 0;

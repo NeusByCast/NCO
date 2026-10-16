@@ -60,6 +60,7 @@ void exportDiagnostics(const std::filesystem::path& path, const Config& c,
     for (const auto& encoder : encoders) out << ' ' << encoder.name;
     out << "\r\n\r\nCurrent pipeline\r\nrecording=" << s.recording << " paused=" << s.paused
         << " replay=" << s.replay << " selected_encoder=" << s.encoder
+        << " encoder_adapter=" << s.encoderAdapter << " GPU_texture_path=" << s.gpuTexturePath
         << " output=" << s.output.w << 'x' << s.output.h
         << " fps=" << s.actualFps << " video_Mbps=" << s.bitrateMbps
         << " frames=" << s.frames << " dropped=" << s.dropped << " fresh_capture_frames=" << s.freshFrames

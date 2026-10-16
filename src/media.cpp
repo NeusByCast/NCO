@@ -398,6 +398,25 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     }
                 }
                 selected = name;
+                selectedAdapter = name.find("lib") == 0 ? "CPU" : "library-selected adapter";
+                if (attempt >= 0) {
+                    Com<IDXGIFactory1> factory;
+                    Com<IDXGIAdapter1> adapter;
+                    DXGI_ADAPTER_DESC1 description{};
+                    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) &&
+                        SUCCEEDED(factory->EnumAdapters1(UINT(attempt), &adapter)) &&
+                        SUCCEEDED(adapter->GetDesc1(&description)))
+                        selectedAdapter = utf8(description.Description);
+                } else if (gpu_) {
+                    Com<IDXGIDevice> dxgi;
+                    Com<IDXGIAdapter> adapter;
+                    DXGI_ADAPTER_DESC description{};
+                    if (SUCCEEDED(capture->device()->QueryInterface(IID_PPV_ARGS(&dxgi))) &&
+                        SUCCEEDED(dxgi->GetAdapter(&adapter)) &&
+                        SUCCEEDED(adapter->GetDesc(&description)))
+                        selectedAdapter = utf8(description.Description);
+                }
+                Log::get().write("Encoding adapter: " + selectedAdapter);
                 Log::get().write("Video output=" + std::to_string(output_.w) + "x" +
                     std::to_string(output_.h) + " fps=" + std::to_string(cfg.fps) +
                     " bitrate_bps=" + std::to_string(codec_->bit_rate) +

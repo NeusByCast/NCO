@@ -10,7 +10,8 @@ struct EngineStats {
     Size output{};
     double actualFps = 0, bitrateMbps = 0, prepareMs = 0, submitMs = 0;
     double encodeMs = 0, captureMs = 0, cpuPercent = 0, workingSetMiB = 0;
-    std::string encoder;
+    std::string encoder, encoderAdapter;
+    bool gpuTexturePath = false;
 };
 struct Preview {
     Size size;

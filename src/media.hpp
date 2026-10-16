@@ -61,7 +61,7 @@ class VideoEncoder {
     void convert(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT slice);
 
   public:
-    std::string selected;
+    std::string selected, selectedAdapter;
     double prepareMs = 0, submitMs = 0;
     ~VideoEncoder();
     void open(const Config& config, Capture* capture, Size input, bool synthetic = false);
