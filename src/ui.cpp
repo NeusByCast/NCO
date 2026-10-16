@@ -1386,6 +1386,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             screenshot(h, smokeStep_);
             if (++smokeStep_ >= 8) {
                 KillTimer(h, 3);
+                smokeControls();
                 shutdown();
             } else {
                 page_ = smokeStep_ == 7 ? 0 : smokeStep_;

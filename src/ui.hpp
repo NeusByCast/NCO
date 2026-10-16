@@ -92,6 +92,7 @@ class UI {
     void invalidate();
     void command(int action);
     void shutdown();
+    void smokeControls();
     static LRESULT CALLBACK proc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK toastProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK editProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
