@@ -1412,7 +1412,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_MOUSEWHEEL:
         if (popup_.open) {
             popup_.scroll = std::clamp(popup_.scroll - GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA, 0,
-                                       std::max(0, int(popup_.items.size()) - 7));
+                                       std::max(0, int(popup_.items.size()) - popup_.visible));
         } else
             scroll_ =
                 std::clamp(scroll_ - GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA * 56, 0, maxScroll_);
