@@ -337,6 +337,11 @@ bool Capture::frame(Com<ID3D11Texture2D>& texture) {
             HRESULT reopen = output_->DuplicateOutput(device_.Get(), &dup_);
             if (FAILED(reopen))
                 return false;
+            DXGI_OUTDUPL_DESC recovered{};
+            dup_->GetDesc(&recovered);
+            if (recovered.Rotation != DXGI_MODE_ROTATION_IDENTITY)
+                throw std::runtime_error("Display rotated; use Windows Graphics Capture for this display");
+            pointerVisible_ = false;
             Log::get().write("Desktop Duplication recovered after display transition");
         }
         HRESULT hr = dup_->AcquireNextFrame(0, &info, &resource);
@@ -374,7 +379,17 @@ bool Capture::frame(Com<ID3D11Texture2D>& texture) {
                     region = mi.rcMonitor;
                 POINT position{mi.rcMonitor.left + pointerPosition_.x,
                                mi.rcMonitor.top + pointerPosition_.y};
-                pointer_.draw(surface.Get(), region, position);
+                float pointerScale = 1;
+                D3D11_TEXTURE2D_DESC rawDescription{};
+                raw->GetDesc(&rawDescription);
+                if (!source_.custom && (int(rawDescription.Width) != size_.w ||
+                                        int(rawDescription.Height) != size_.h)) {
+                    auto fit = letterbox({int(rawDescription.Width), int(rawDescription.Height)}, size_);
+                    pointerScale = float(fit.w) / rawDescription.Width;
+                    position.x = region.left + fit.x + LONG(pointerPosition_.x * pointerScale);
+                    position.y = region.top + fit.y + LONG(pointerPosition_.y * pointerScale);
+                }
+                pointer_.draw(surface.Get(), region, position, pointerScale);
             } catch (const std::exception& e) {
                 pointerFailed_ = true;
                 Log::get().write(std::string("Cursor composition unavailable: ") + e.what());

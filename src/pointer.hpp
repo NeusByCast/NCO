@@ -10,6 +10,6 @@ class PointerOverlay {
     HCURSOR cursor_ = nullptr;
     POINT hotspot_{};
   public:
-    void draw(IDXGISurface* surface, const RECT& screenRegion, POINT position);
+    void draw(IDXGISurface* surface, const RECT& screenRegion, POINT position, float scale = 1);
 };
 }
