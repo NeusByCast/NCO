@@ -1278,7 +1278,9 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
             target_->Resize(D2D1::SizeU(LOWORD(l), HIWORD(l)));
         if (w == SIZE_MINIMIZED) {
             KillTimer(h, 1);
-            KillTimer(h, 2);
+            // A toast must finish its lifetime even when the main window minimizes.
+            if (!toastVisible_)
+                KillTimer(h, 2);
         } else {
             SetTimer(h, 1, 125, nullptr);
             invalidate();

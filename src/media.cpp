@@ -472,13 +472,26 @@ void Muxer::close() {
     ctx_ = nullptr;
     avcheck(ret, "Finalize media file");
 }
-bool verifyFile(const std::filesystem::path& p) {
+static bool verifyContents(const std::filesystem::path& p,
+                           const std::vector<size_t>* expected = nullptr,
+                           const std::vector<AVCodecID>* codecs = nullptr) {
     AVFormatContext* ctx = nullptr;
     if (avformat_open_input(&ctx, utf8(p.wstring()).c_str(), nullptr, nullptr) < 0)
         return false;
     bool good = avformat_find_stream_info(ctx, nullptr) >= 0;
     std::vector<size_t> counts(ctx->nb_streams);
+    if (expected && expected->size() != counts.size())
+        good = false;
+    if (codecs) {
+        good = good && codecs->size() == counts.size();
+        for (size_t i = 0; good && i < counts.size(); ++i)
+            good = ctx->streams[i]->codecpar->codec_id == (*codecs)[i];
+    }
     AVPacket* packet = av_packet_alloc();
+    if (!packet) {
+        avformat_close_input(&ctx);
+        throw std::bad_alloc();
+    }
     int ret = 0;
     while (good && (ret = av_read_frame(ctx, packet)) >= 0) {
         if (packet->stream_index >= 0 && unsigned(packet->stream_index) < counts.size())
@@ -487,9 +500,14 @@ bool verifyFile(const std::filesystem::path& p) {
     }
     good = good && ret == AVERROR_EOF && !counts.empty() &&
            std::all_of(counts.begin(), counts.end(), [](size_t n) { return n > 0; });
+    if (expected)
+        good = good && counts == *expected;
     av_packet_free(&packet);
     avformat_close_input(&ctx);
     return good;
+}
+bool verifyFile(const std::filesystem::path& p) {
+    return verifyContents(p);
 }
 void remuxFile(const std::filesystem::path& source, const std::filesystem::path& target) {
     AVFormatContext* in = nullptr;
@@ -498,7 +516,10 @@ void remuxFile(const std::filesystem::path& source, const std::filesystem::path&
     try {
         avcheck(avformat_find_stream_info(in, nullptr), "Read remux source");
         std::vector<Track> tracks;
+        std::vector<size_t> counts(in->nb_streams);
+        std::vector<AVCodecID> codecs;
         for (unsigned i = 0; i < in->nb_streams; ++i) {
+            codecs.push_back(in->streams[i]->codecpar->codec_id);
             auto p = avcodec_parameters_alloc();
             if (!p)
                 throw std::bad_alloc();
@@ -520,6 +541,9 @@ void remuxFile(const std::filesystem::path& source, const std::filesystem::path&
         int ret = 0;
         try {
             while ((ret = av_read_frame(in, p)) >= 0) {
+                if (p->stream_index < 0 || unsigned(p->stream_index) >= counts.size())
+                    throw std::runtime_error("Invalid stream in remux source; original retained");
+                ++counts[size_t(p->stream_index)];
                 AVPacket* q = av_packet_clone(p);
                 if (!q)
                     throw std::bad_alloc();
@@ -535,8 +559,9 @@ void remuxFile(const std::filesystem::path& source, const std::filesystem::path&
         av_packet_free(&p);
         output.close();
         avformat_close_input(&in);
-        if (!verifyFile(target))
-            throw std::runtime_error("Remux output failed verification; original retained");
+        if (!verifyContents(target, &counts, &codecs))
+            throw std::runtime_error(
+                "Remux output stream codecs or packet counts failed verification; original retained");
     } catch (...) {
         if (in)
             avformat_close_input(&in);

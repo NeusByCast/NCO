@@ -164,6 +164,53 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
     }
 }
 
+void separateTrackRemux(const std::filesystem::path& dir) {
+    Config config;
+    config.fps = 30;
+    config.encoder = "libx264";
+    VideoEncoder video;
+    video.open(config, nullptr, {320, 180}, true);
+    AudioEncoder mic, desktop;
+    mic.open(false, 1);
+    desktop.open(false, 2);
+    auto tracks = std::vector<Track>{video.track(), mic.track(), desktop.track()};
+    tracks[1].name = "Microphone";
+    tracks[2].name = "Desktop audio";
+    auto source = dir / "separate-tracks.mkv";
+    auto target = dir / "separate-tracks.mp4";
+    Muxer mux;
+    mux.open(source, tracks);
+    auto write = [&](std::vector<Packet> packets) {
+        for (auto& p : packets)
+            mux.write(p);
+    };
+    int64_t sample = 0;
+    for (int frame = 0; frame < 60; ++frame) {
+        write(video.synthetic(frame, frame == 0));
+        while (sample < (frame + 1) * 48000 / 30) {
+            auto samples = tone(sample, mic.frameSize());
+            write(mic.encode(samples, sample));
+            for (auto& value : samples)
+                value *= .5f;
+            write(desktop.encode(samples, sample));
+            sample += mic.frameSize();
+        }
+    }
+    write(video.flush());
+    write(mic.flush());
+    write(desktop.flush());
+    mux.close();
+    remuxFile(source, target);
+    auto before = inspect(source), after = inspect(target);
+    require(before.size() == 3 && after.size() == 3, "Remux lost an independent audio track");
+    for (size_t i = 0; i < before.size(); ++i) {
+        require(before[i].codec == after[i].codec && before[i].packets == after[i].packets,
+                "Independent track remux changed codec or packet count");
+        require(std::abs(after[0].end - after[i].end) < 100000,
+                "Independent track remux lost A/V synchronization");
+    }
+}
+
 void videoMatrix(const std::filesystem::path& dir) {
     for (int fps : {15, 30, 60}) {
         for (int quality = 0; quality < 5; ++quality) {
@@ -263,6 +310,8 @@ int mediaSelfTest() {
         replayDurations(dir);
         report << "PASS 15/30/60-second replay rings with accelerated synthetic A/V\n";
         report << "PASS MKV-to-MP4 stream-copy remux preserves codecs and packet counts\n";
+        separateTrackRemux(dir);
+        report << "PASS independent microphone/desktop tracks survive verified MKV-to-MP4 remux\n";
         report << "UNVERIFIED hardware capture, WASAPI, real audio synchronization, long-run "
                   "stability, interactive controls, DPI and gaming performance\n";
         return 0;
