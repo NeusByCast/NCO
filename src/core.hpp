@@ -41,6 +41,13 @@ inline int bitrate(Size s, int fps, int quality, bool efficient) {
                                        (efficient ? .65 : 1.0)),
                       500000, 150000000);
 }
+// Adapter speed ranking does not determine hardware texture compatibility.
+// Prefer encoding on the capture adapter when the encoder supports its vendor.
+inline bool textureEncoderCompatible(const std::string& codec, uint32_t vendor) {
+    return (codec.find("amf") != std::string::npos && vendor == 0x1002) ||
+           (codec.find("nvenc") != std::string::npos && vendor == 0x10de) ||
+           codec.find("_mf") != std::string::npos;
+}
 inline bool containerCompatible(const std::string& format, const std::string& codec) {
     if (format != "mp4" && format != "mkv" && format != "mov" && format != "webm")
         return false;

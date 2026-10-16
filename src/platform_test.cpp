@@ -1,10 +1,46 @@
 #include "platform.hpp"
+#include "capture.hpp"
 #include "toast.hpp"
 #include <ostream>
 #include <d3d11.h>
+#include <wrl/implements.h>
 
 namespace nco {
 namespace {
+// Real Capture::frame calls against a deterministic duplication interface.
+class TestDuplication final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IDXGIOutputDuplication> {
+  public:
+    Com<IDXGIResource> resource;
+    bool held = false, timeout = false, accessLost = false;
+    int acquired = 0, released = 0;
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, UINT, const void*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, UINT*, void*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID, void**) override { return E_NOINTERFACE; }
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID, void**) override { return E_NOINTERFACE; }
+    void STDMETHODCALLTYPE GetDesc(DXGI_OUTDUPL_DESC* desc) override { *desc = {}; }
+    HRESULT STDMETHODCALLTYPE AcquireNextFrame(UINT wait, DXGI_OUTDUPL_FRAME_INFO* info, IDXGIResource** out) override {
+        if (held || wait != 0) return DXGI_ERROR_INVALID_CALL;
+        if (timeout) return DXGI_ERROR_WAIT_TIMEOUT;
+        *info = {};
+        info->AccumulatedFrames = 1;
+        held = true;
+        ++acquired;
+        return resource.CopyTo(out);
+    }
+    HRESULT STDMETHODCALLTYPE GetFrameDirtyRects(UINT, RECT*, UINT*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetFrameMoveRects(UINT, DXGI_OUTDUPL_MOVE_RECT*, UINT*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetFramePointerShape(UINT, void*, UINT*, DXGI_OUTDUPL_POINTER_SHAPE_INFO*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE MapDesktopSurface(DXGI_MAPPED_RECT*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE UnMapDesktopSurface() override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE ReleaseFrame() override {
+        if (!held) return DXGI_ERROR_INVALID_CALL;
+        held = false;
+        ++released;
+        return accessLost ? DXGI_ERROR_ACCESS_LOST : S_OK;
+    }
+};
 struct KeyEvents {
     int single = 0, combination = 0;
 };
@@ -51,6 +87,51 @@ void releaseTestKeys() {
 }
 } // namespace
 
+void duplicationFrameSelfTest(ID3D11Device* device, ID3D11DeviceContext* context) {
+    auto duplication = Microsoft::WRL::Make<TestDuplication>();
+    require(duplication != nullptr, "Cannot allocate duplication regression");
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = desc.Height = 16;
+    desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    Com<ID3D11Texture2D> source;
+    check(device->CreateTexture2D(&desc, nullptr, &source), "Duplication regression source");
+    check(source.As(&duplication->resource), "Duplication regression resource");
+    {
+        Capture capture;
+        capture.device_ = device;
+        capture.context_ = context;
+        capture.size_ = {16, 16};
+        capture.dup_ = duplication;
+        Com<ID3D11Texture2D> frame;
+        require(capture.frame(frame) && duplication->held && duplication->released == 0,
+                "Capture must retain ownership between frame ticks");
+        require(capture.frame(frame) && duplication->held && duplication->released == 1 &&
+                duplication->acquired == 2, "Next acquisition must release exactly once first");
+        duplication->timeout = true;
+        require(!capture.frame(frame) && !duplication->held && duplication->released == 2,
+                "Acquisition timeout must leave no outstanding frame");
+        duplication->timeout = false;
+        require(capture.frame(frame), "Capture must recover after an empty frame tick");
+    }
+    require(!duplication->held && duplication->released == 3,
+            "Capture destruction must release its outstanding frame");
+    {
+        Capture capture;
+        capture.device_ = device;
+        capture.context_ = context;
+        capture.size_ = {16, 16};
+        capture.dup_ = duplication;
+        Com<ID3D11Texture2D> frame;
+        require(capture.frame(frame), "Access-loss regression acquisition failed");
+        duplication->accessLost = true;
+        require(!capture.frame(frame) && !capture.dup_ && !capture.desktopFrameHeld_,
+                "Release-time access loss must discard the duplication interface");
+    }
+    require(!duplication->held && duplication->released == 4,
+            "Access loss must not double-release the desktop frame");
+}
+
 void regionInputSelfTest();
 void platformSelfTest(std::ostream& report) {
     {
@@ -80,8 +161,10 @@ void platformSelfTest(std::ostream& report) {
         const bool valid = *static_cast<uint32_t*>(mapped.pData) == pixels.front();
         context->Unmap(stage.Get(), 0);
         require(valid, "Submitted GPU copy did not reach the readback stage");
+        duplicationFrameSelfTest(device.Get(), context.Get());
     }
     report << "PASS explicit GPU submission and nonblocking staging completion on D3D11 WARP\n";
+    report << "PASS actual Capture frame ownership: retain between ticks, release before next acquisition, timeout, destruction and access-loss cleanup\n";
     regionInputSelfTest();
     report << "PASS region ignores opening-button release and accepts an explicit drag\n";
     HWND notification = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, L"STATIC", L"",

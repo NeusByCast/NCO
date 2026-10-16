@@ -33,4 +33,7 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - Recording conversion disables driver automatic video processing and reuses bounded input/output processor views. Static conversion state is configured once per pipeline.
 - Diagnostics distinguish submitted frames from encoded output and report available packet QP statistics. Recording tests verify saved resolution and BT.709 limited-range metadata.
 
-- Auto display/region capture uses Desktop Duplication on the display adapter first, keeping conversion off the gaming GPU on hybrid systems. Hardware encoding remains on the preferred adapter through the bounded asynchronous NV12 transfer path. Explicit WGC selection and window capture retain their preferred-GPU path.
+- Auto display/region capture uses Desktop Duplication on the display adapter first, keeping conversion off the gaming GPU on hybrid systems. Hardware encoding tries the compatible capture adapter first; other hardware adapters retain the bounded asynchronous NV12 transfer fallback. Explicit WGC selection and window capture retain their preferred-GPU path.
+
+- Desktop Duplication retains its frame between capture ticks, releases just before the next acquisition, and cleans up outstanding ownership on errors and destruction. A deterministic Windows regression exercises actual Capture calls, including empty ticks and access loss.
+- AMF can encode textures on an integrated AMD capture GPU even when another AMD GPU ranks faster. This removes the forced GPU-to-RAM-to-GPU route on compatible hybrid systems. Encoder startup still validates support and retains the prior fallbacks. Quality, quantization limits, bitrate, output dimensions and frame-rate settings are unchanged.

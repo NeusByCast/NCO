@@ -48,6 +48,16 @@ int main() {
     CHECK(rejected);
     CHECK(bitrate({1920, 1080}, 60, 4, false) > bitrate({1920, 1080}, 30, 2, false));
     CHECK(bitrate({1920, 1080}, 60, 2, false) >= 29000000);
+    for (const auto& name : {"h264_amf", "hevc_amf", "av1_amf"}) {
+        CHECK(textureEncoderCompatible(name, 0x1002)); // Both AMD integrated and discrete GPUs.
+        CHECK(!textureEncoderCompatible(name, 0x10de));
+        CHECK(!textureEncoderCompatible(name, 0x8086));
+    }
+    CHECK(textureEncoderCompatible("h264_nvenc", 0x10de));
+    CHECK(!textureEncoderCompatible("h264_nvenc", 0x1002));
+    CHECK(!textureEncoderCompatible("h264_qsv", 0x8086)); // No QSV texture implementation yet.
+    CHECK(!textureEncoderCompatible("libx264", 0x1002));
+    CHECK(textureEncoderCompatible("h264_mf", 0x8086));
     CHECK(!containerCompatible("webm", "h264_nvenc"));
     CHECK(containerCompatible("webm", "av1_amf"));
     CHECK(containerCompatible("webm", "auto"));

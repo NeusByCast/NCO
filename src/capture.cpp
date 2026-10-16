@@ -1,6 +1,7 @@
 #include "capture.hpp"
 #include <d3d11_4.h>
 #include <dwmapi.h>
+#include <utility>
 #include <dxgi1_6.h>
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
@@ -78,7 +79,12 @@ std::vector<Source> sources(HWND exclude) {
         reinterpret_cast<LPARAM>(&a));
     return r;
 }
+HRESULT Capture::releaseDesktopFrame() noexcept {
+    if (!std::exchange(desktopFrameHeld_, false) || !dup_) return S_OK;
+    return dup_->ReleaseFrame();
+}
 Capture::~Capture() {
+    releaseDesktopFrame();
     try {
         if (session_)
             session_.Close();
@@ -384,7 +390,10 @@ bool Capture::frame(Com<ID3D11Texture2D>& texture) {
             pointerVisible_ = false;
             Log::get().write("Desktop Duplication recovered after display transition");
         }
-        HRESULT hr = dup_->AcquireNextFrame(0, &info, &resource);
+        // Keep ownership between capture ticks. Releasing early makes Windows
+        // repeatedly copy desktop updates into the duplication surface.
+        HRESULT hr = releaseDesktopFrame();
+        if (SUCCEEDED(hr)) hr = dup_->AcquireNextFrame(0, &info, &resource);
         if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_ACCESS_DENIED) {
             Log::get().write("Desktop Duplication interrupted; retrying after display transition");
             dup_.Reset();
@@ -394,14 +403,14 @@ bool Capture::frame(Com<ID3D11Texture2D>& texture) {
         if (hr == DXGI_ERROR_WAIT_TIMEOUT)
             return false;
         check(hr, "Acquire desktop frame");
+        desktopFrameHeld_ = true;
         try {
             check(resource.As(&raw), "Desktop texture");
             copyFrame(raw.Get());
         } catch (...) {
-            dup_->ReleaseFrame();
+            releaseDesktopFrame();
             throw;
         }
-        dup_->ReleaseFrame();
         if (info.LastMouseUpdateTime.QuadPart) {
             pointerVisible_ = info.PointerPosition.Visible != FALSE;
             pointerPosition_ = info.PointerPosition.Position;

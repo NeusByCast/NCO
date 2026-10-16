@@ -21,6 +21,9 @@ class Capture {
     Com<ID3D11Device> device_;
     Com<ID3D11DeviceContext> context_;
     Com<IDXGIOutputDuplication> dup_;
+    bool desktopFrameHeld_ = false;
+    HRESULT releaseDesktopFrame() noexcept;
+    friend void duplicationFrameSelfTest(ID3D11Device*, ID3D11DeviceContext*);
     Com<IDXGIOutput1> output_;
     int64_t retryDuplication_ = 0;
     bool pointerVisible_ = false;

@@ -69,22 +69,14 @@ static std::vector<int> preferredAdapters(UINT vendor = 0) {
     }
     return result;
 }
-static bool preferredCaptureDevice(Capture* capture) {
-    auto preferred = preferredAdapters();
-    if (!capture || preferred.empty()) return true;
+static UINT captureVendor(Capture* capture) {
+    if (!capture) return 0;
     Com<IDXGIDevice> dx;
     Com<IDXGIAdapter> adapter;
-    DXGI_ADAPTER_DESC current{};
+    DXGI_ADAPTER_DESC description{};
     if (FAILED(capture->device()->QueryInterface(IID_PPV_ARGS(&dx))) ||
-        FAILED(dx->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&current))) return false;
-    Com<IDXGIFactory1> factory;
-    Com<IDXGIAdapter1> best;
-    DXGI_ADAPTER_DESC1 desc{};
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
-        FAILED(factory->EnumAdapters1(UINT(preferred.front()), &best)) ||
-        FAILED(best->GetDesc1(&desc))) return false;
-    return current.AdapterLuid.HighPart == desc.AdapterLuid.HighPart &&
-           current.AdapterLuid.LowPart == desc.AdapterLuid.LowPart;
+        FAILED(dx->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&description))) return 0;
+    return description.VendorId;
 }
 static std::vector<int> amdAdapters() {
     return preferredAdapters(0x1002);
@@ -379,10 +371,8 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
         const auto codec = avcodec_find_encoder_by_name(name.c_str());
         if (!codec)
             continue;
-        bool canGpu =
-            !synthetic && capture && preferredCaptureDevice(capture) &&
-            (name.find("nvenc") != std::string::npos || name.find("amf") != std::string::npos ||
-             name.find("_mf") != std::string::npos);
+        const bool canGpu = !synthetic && capture &&
+                            textureEncoderCompatible(name, captureVendor(capture));
         std::vector<int> attempts;
         if (canGpu)
             attempts.push_back(-2); // capture device, zero readback

@@ -44,7 +44,7 @@ g++ -std=c++20 -O2 -I src tests/core_tests.cpp -o nco-core-tests
 ./nco-core-tests
 ```
 
-Auto prefers the high-performance GPU vendor and AMD adapter, with software encoding as a last resort. WGC window capture requests the high-performance GPU. Full-display Desktop Duplication must use the adapter driving that display; on hybrid laptops, cross-GPU hardware encoding uses GPU NV12 scaling/color conversion followed by a smaller NV12 readback/upload. This is not a universal zero-copy promise. Hardware texture frames use separate NV12 textures instead of arrays.
+Auto prioritizes the preferred hardware vendor, then tries texture encoding directly on the capture adapter when compatible. Other hardware adapters and software encoding remain fallbacks. WGC window capture requests the high-performance GPU. Full-display Desktop Duplication must use the adapter driving that display; on hybrid laptops, cross-GPU hardware encoding uses GPU NV12 scaling/color conversion followed by a smaller NV12 readback/upload. This is not a universal zero-copy promise. Hardware texture frames use separate NV12 textures instead of arrays.
 
 Settings includes **Remux a recording**, an asynchronous stream-copy export that preserves the source and rejects existing destination files. Codec/container mismatches are rejected by the muxer. **Export diagnostics** creates NCO-diagnostic.txt with Windows build, adapter/driver details, current configuration, available encoders, output dimensions, actual FPS/bitrate, per-stage timing, frame-drop/resource counters and the bounded log. The log always samples active pipelines once per second and includes UTC timestamps and thread IDs. Verbose logging remains optional; no captured media is logged.
 
@@ -52,4 +52,6 @@ Settings includes **Remux a recording**, an asynchronous stream-copy export that
 
 AMD quality presets use the Balanced encoder workload from Medium through Ultra. Image quality is controlled separately: VBR limits quantization by quality level, while CQP keeps quantization fixed and lets file size vary. CBR prioritizes the requested bitrate and can lose detail in complex motion. Bitrate targets and peaks are rate-control settings, not per-second file-size guarantees. GPU conversion disables automatic video enhancements. Diagnostics report encoded-frame counts and quantizer statistics when the encoder exposes them.
 
-Auto display capture runs on the GPU driving the monitor. On hybrid laptops, NV12 conversion can run there while hardware encoding runs on the preferred GPU; the transfer remains asynchronous. Selecting WGC explicitly retains capture on the preferred GPU when needed for compatibility.
+Auto display capture runs on the GPU driving the monitor. Compatible hardware encoding now tries that same GPU first, including integrated AMD GPUs, avoiding a CPU readback and upload to a second GPU. When that encoder cannot start, the existing hardware adapter fallbacks and asynchronous NV12 transfer remain available. Selecting WGC explicitly retains capture on the preferred GPU when needed for compatibility.
+
+Desktop Duplication retains ownership between capture ticks and releases immediately before acquiring the next frame. Cleanup releases outstanding frames on shutdown and display transitions.
