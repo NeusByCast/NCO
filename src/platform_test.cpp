@@ -18,7 +18,6 @@ class TestDuplication final : public Microsoft::WRL::RuntimeClass<
     HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, UINT*, void*) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetParent(REFIID, void**) override { return E_NOINTERFACE; }
-    HRESULT STDMETHODCALLTYPE GetDevice(REFIID, void**) override { return E_NOINTERFACE; }
     void STDMETHODCALLTYPE GetDesc(DXGI_OUTDUPL_DESC* desc) override { *desc = {}; }
     HRESULT STDMETHODCALLTYPE AcquireNextFrame(UINT wait, DXGI_OUTDUPL_FRAME_INFO* info, IDXGIResource** out) override {
         if (held || wait != 0) return DXGI_ERROR_INVALID_CALL;
