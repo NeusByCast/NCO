@@ -23,7 +23,8 @@ void UI::smokeControls() {
                                 [&](const auto& c) { return c.id == id && c.enabled; });
         };
         auto it = find();
-        require(it != controls_.end(), "Test control missing or disabled");
+        if (it == controls_.end())
+            throw std::runtime_error("Test control missing or disabled: " + utf8(id));
         const bool chrome = id.rfind(L"nav", 0) == 0 || id == L"min" || id == L"max";
         if (!chrome && id.rfind(L"option", 0) != 0 &&
             (it->rect.top < 136 || it->rect.bottom > h_ - 38)) {
@@ -50,6 +51,12 @@ void UI::smokeControls() {
     auto choose = [&](const wchar_t* id, int index) {
         clickControl(id);
         require(popup_.open, "Dropdown did not open");
+        for (int attempt = 0; attempt < 12 &&
+             (index < popup_.scroll || index >= popup_.scroll + popup_.visible); ++attempt) {
+            const int delta = index < popup_.scroll ? WHEEL_DELTA : -WHEEL_DELTA;
+            SendMessageW(hwnd_, WM_MOUSEWHEEL, MAKEWPARAM(0, WORD(delta)), 0);
+            draw();
+        }
         clickControl(L"option" + std::to_wstring(index));
         require(!popup_.open, "Dropdown did not close after selection");
     };

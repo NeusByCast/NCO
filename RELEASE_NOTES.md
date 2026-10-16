@@ -14,3 +14,5 @@ Automated Windows tests exercise region input messages, region replacement, popu
 Download NCO-Setup.exe. Updates preserve user settings.
 
 Replay packets are kept in timestamp order when asynchronous video arrives after audio; initial audio is retained until its first video keyframe. Logs separately show GPU readback queue occupancy/rejections and CPU encoder queue depth.
+
+Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, and supports arrow-key selection plus Enter. Windows regression tests select offscreen options through actual wheel messages.

@@ -348,7 +348,7 @@ void UI::dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selecte
     finishEdit(true);
     popup_ = {true, rect, std::move(items), selected, 0, clockUs(), std::move(choose)};
     popup_.owner = pressed_;
-    popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - 7));
+    popup_.scroll = std::clamp(selected - 3, 0, std::max(0, int(popup_.items.size()) - popup_.visible));
     SetTimer(hwnd_, 2, 16, nullptr);
     invalidate();
 }
@@ -900,6 +900,11 @@ void UI::popup() {
     const bool upward = below < 264 && above > below;
     const float available = std::max(48.f, upward ? above : below);
     int visible = std::max(1, std::min({7, int(a.items.size()), int((available - 12) / 36)}));
+    a.visible = visible;
+    if (!a.positioned) {
+        a.scroll = std::clamp(a.selected - visible / 2, 0, std::max(0, int(a.items.size()) - visible));
+        a.positioned = true;
+    }
     a.scroll = std::clamp(a.scroll, 0, std::max(0, int(a.items.size()) - visible));
     float height = visible * 36.f + 12;
     float width = std::min(w_ - 24, std::max(180.f, a.anchor.right - a.anchor.left));
@@ -931,6 +936,12 @@ void UI::popup() {
         controls_.back().rect.bottom = std::min(r.bottom, box.bottom);
         if (controls_.back().rect.bottom <= controls_.back().rect.top)
             controls_.back().enabled = false;
+    }
+    if (int(a.items.size()) > visible) {
+        float track = height - 16;
+        float thumb = std::max(18.f, track * visible / int(a.items.size()));
+        float top = y + 8 + (track - thumb) * a.scroll / (int(a.items.size()) - visible);
+        round({x + width - 5, top, x + width - 2, top + thumb}, muted, 1.5f);
     }
     target_->PopAxisAlignedClip();
 }
@@ -1108,6 +1119,21 @@ void UI::key(WPARAM key) {
         hotkeyIndex_ = -1;
         keyErrors_ = hotkeys_->apply(cfg_.keys);
         save(false);
+        return;
+    }
+    if (popup_.open && !popup_.closing && (key == VK_UP || key == VK_DOWN || key == VK_RETURN)) {
+        if (key == VK_RETURN) {
+            auto choose = popup_.choose;
+            int selected = popup_.selected;
+            dismissPopup();
+            choose(selected);
+        } else {
+            popup_.selected = std::clamp(popup_.selected + (key == VK_DOWN ? 1 : -1),
+                                         0, int(popup_.items.size()) - 1);
+            popup_.scroll = std::clamp(popup_.selected - popup_.visible / 2, 0,
+                                        std::max(0, int(popup_.items.size()) - popup_.visible));
+        }
+        invalidate();
         return;
     }
     if (key == VK_ESCAPE) {

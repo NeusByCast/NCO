@@ -22,6 +22,8 @@ class UI {
         bool closing = false;
         int64_t closeStart = 0;
         std::wstring owner;
+        int visible = 7;
+        bool positioned = false;
     };
     HWND hwnd_ = nullptr, toast_ = nullptr, edit_ = nullptr;
     HINSTANCE instance_;
