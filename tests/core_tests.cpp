@@ -49,6 +49,12 @@ int main() {
     CHECK(bitrate({1920, 1080}, 60, 4, false) > bitrate({1920, 1080}, 30, 2, false));
     CHECK(!containerCompatible("webm", "h264_nvenc"));
     CHECK(containerCompatible("webm", "av1_amf"));
+    CHECK(containerCompatible("webm", "auto"));
+    CHECK(!containerCompatible("mov", "av1_nvenc"));
+    CHECK(!containerCompatible("mov", "libvpx-vp9"));
+    CHECK(containerCompatible("mov", "hevc_qsv"));
+    CHECK(containerCompatible("mp4", "av1_nvenc"));
+    CHECK(!containerCompatible("invalid", "h264_nvenc"));
     CHECK(duplicate({{1, 0}, {2, 0}}, 1, {1, 0}));
     CHECK(!duplicate({{1, 0}, {2, 0}}, 1, {0, 0}));
     ReplayRing<P> r;

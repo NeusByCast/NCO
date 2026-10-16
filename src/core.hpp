@@ -40,8 +40,20 @@ inline int bitrate(Size s, int fps, int quality, bool efficient) {
                       500000, 150000000);
 }
 inline bool containerCompatible(const std::string& format, const std::string& codec) {
-    return format != "webm" || codec.find("av1") != std::string::npos ||
-           codec.find("vp9") != std::string::npos;
+    if (format != "mp4" && format != "mkv" && format != "mov" && format != "webm")
+        return false;
+    if (codec == "auto")
+        return true;
+    const bool av1 = codec.find("av1") != std::string::npos;
+    const bool vp9 = codec.find("vp9") != std::string::npos;
+    const bool h264 = codec.find("264") != std::string::npos;
+    const bool hevc = codec.find("hevc") != std::string::npos;
+    if (format == "webm")
+        return av1 || vp9;
+    // FFmpeg's QuickTime MOV muxer does not accept AV1 or VP9.
+    if (format == "mov")
+        return h264 || hevc;
+    return h264 || hevc || av1 || vp9;
 }
 struct Shortcut {
     unsigned key = 0, mods = 0;

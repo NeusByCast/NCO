@@ -1447,8 +1447,9 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         encoders_ = std::move(*p);
         probing_ = false;
         if (cfg_.encoder != "auto" &&
-            std::none_of(encoders_.begin(), encoders_.end(),
-                         [this](const auto& encoder) { return encoder.name == cfg_.encoder; })) {
+            (!containerCompatible(cfg_.format, cfg_.encoder) ||
+             std::none_of(encoders_.begin(), encoders_.end(),
+                          [this](const auto& encoder) { return encoder.name == cfg_.encoder; }))) {
             Log::get().write("Saved encoder is unavailable; selecting Auto");
             cfg_.encoder = "auto";
         }

@@ -410,6 +410,8 @@ void Muxer::open(const std::filesystem::path& path, const std::vector<Track>& tr
     if (!ctx_)
         throw std::runtime_error("No muxer for this container");
     for (auto& t : tracks) {
+        if (avformat_query_codec(ctx_->oformat, t.par->codec_id, FF_COMPLIANCE_NORMAL) == 0)
+            throw std::runtime_error("Selected container does not support the encoded track");
         AVStream* s = avformat_new_stream(ctx_, nullptr);
         if (!s)
             throw std::bad_alloc();
