@@ -1,6 +1,6 @@
 # NCO 0.4
 
-- Moving/resizing the app pauses preview acquisition and UI animations, retains the last image, and resumes preview on release. The native move loop no longer drives preview repaint timers. Record requests show immediate Starting feedback; confirmed start still follows output-file readiness. Notifications read current engine status and present their first frame immediately.
+- Moving/resizing the app pauses preview acquisition and UI animations, retains the last image, and resumes preview on release. The native move loop no longer drives preview repaint timers. Record requests show one immediate Starting popup; output-file readiness refreshes the dashboard without a second popup. Notifications read current engine status and present their first frame immediately.
 
 - Opening the capture-source selector discovers current windows, preserving the selected display/window/region without periodic scanning or audio-device enumeration. Minimized windows remain listed and ask to be restored before selection. Browser windows show their active tab title; tabs within one browser window are not separate window-capture sources. Recording and preview rendering are unchanged.
 

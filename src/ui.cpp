@@ -1301,7 +1301,9 @@ void UI::notify(std::string msg, bool error) {
         // don't wait for the next dashboard paint or one-second status tick.
         if (engine_) stats_ = engine_->stats();
         if (msg != "Recording stopped") message_.clear();
-        toast(wide(msg));
+        // Record requests already show one immediate popup. The confirmed
+        // start refreshes the dashboard without producing a second popup.
+        if (msg != "Recording started") toast(wide(msg));
     }
     invalidate();
 }
