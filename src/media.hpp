@@ -1,7 +1,7 @@
 #pragma once
 #include "capture.hpp"
 #include "config.hpp"
-#include <d3d11_3.h>
+#include <d3d11_4.h>
 #include <condition_variable>
 #include <deque>
 #include <future>
