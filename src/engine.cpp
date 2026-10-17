@@ -574,8 +574,9 @@ void Engine::run(std::stop_token token) {
                     // A deadline also survives dropped frames at the boundary.
                     const bool replayKey = replay && frameIndex >= nextReplayKeyframe;
                     if (video->submit(texture.Get(), frameIndex, forceKey || replayKey)) {
+                        if (replay && (forceKey || replayKey))
+                            nextReplayKeyframe = frameIndex + int64_t(cfg.fps) * 2;
                         forceKey = false;
-                        if (replayKey) nextReplayKeyframe = frameIndex + int64_t(cfg.fps) * 2;
                     } else
                         ++local.dropped;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);

@@ -116,8 +116,8 @@ template <class T> class ReplayRing {
                 break;
             if (next->us() > cutoff && bytes_ <= cap)
                 break;
-            // Count once: deque pops invalidate iterators, and searching again
-            // after every pop makes discarding a GOP quadratic in its size.
+            // Count the prefix once instead of searching for its terminating
+            // keyframe after every removed packet.
             auto remaining = std::distance(packets_.begin(), next);
             while (remaining-- > 0) {
                 bytes_ -= packets_.front().bytes();
