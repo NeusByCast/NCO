@@ -1,4 +1,5 @@
 #include "media.hpp"
+#include "quality_probe.hpp"
 #include <cmath>
 #include <fstream>
 #include <cstdarg>
@@ -329,7 +330,10 @@ std::vector<EncoderChoice> probeEncoders() {
     }
     return out;
 }
+VideoEncoder::VideoEncoder() = default;
 VideoEncoder::~VideoEncoder() {
+    if (qualityProbe_ || (capture_ && qualityState.load() == 1))
+        failQualityComparison("Encoder stopped before the comparison completed");
     av_frame_free(&frame_);
     avcodec_free_context(&codec_);
     av_buffer_unref(&frames_);
@@ -607,6 +611,19 @@ std::vector<Packet> VideoEncoder::send(AVFrame* f) {
     avcheck(sent, "Submit video");
     auto pending = receive(codec_, 0);
     output.insert(output.end(), pending.begin(), pending.end());
+    if (qualityProbe_) {
+        try {
+            for (const auto& packet : output) {
+                if (packet.p->pts != qualityProbe_->pts) continue;
+                qualityProbe_->save(packet, track(), capture_);
+                qualityProbe_.reset();
+                break;
+            }
+        } catch (const std::exception& error) {
+            failQualityComparison(error.what());
+            qualityProbe_.reset();
+        }
+    }
     return output;
 }
 void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
@@ -711,6 +728,19 @@ bool VideoEncoder::drainReadback(std::vector<Packet>& output) {
 }
 std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool key) {
     const auto begin = clockUs();
+    if (qualityProbe_ && begin > qualityProbe_->deadline) {
+        failQualityComparison("No matching encoded frame arrived within five seconds");
+        qualityProbe_.reset();
+    }
+    if (takeQualityComparison(begin)) {
+        try {
+            if (!gpu_) throw std::runtime_error("Comparison requires the GPU texture encoding path");
+            qualityProbe_ = std::make_unique<QualityProbe>(capture_, t, output_, pts);
+        } catch (const std::exception& error) {
+            failQualityComparison(error.what());
+        }
+    }
+    if (qualityProbe_ && qualityProbe_->pts == pts) key = true;
     if (nv12Readback_) {
         pendingKey_ = pendingKey_ || key;
         std::vector<Packet> output;
@@ -740,6 +770,14 @@ std::vector<Packet> VideoEncoder::encode(ID3D11Texture2D* t, int64_t pts, bool k
         auto out = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
         UINT slice = UINT(reinterpret_cast<uintptr_t>(frame_->data[1]));
         convert(t, out, slice);
+        if (qualityProbe_ && qualityProbe_->pts == pts) {
+            try {
+                qualityProbe_->copyConverted(capture_, out, slice);
+            } catch (const std::exception& error) {
+                failQualityComparison(error.what());
+                qualityProbe_.reset();
+            }
+        }
         // Submit the conversion before another API/device consumes the texture.
         capture_->context()->Flush();
     } else {

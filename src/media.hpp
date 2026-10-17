@@ -43,7 +43,12 @@ struct EncoderChoice {
     bool gpu = false;
 };
 std::vector<EncoderChoice> probeEncoders();
+// Explicit, one-shot capture of matching pipeline stages; screenshots stay local.
+bool requestQualityComparison();
+const wchar_t* qualityComparisonStatus();
+class QualityProbe;
 class VideoEncoder {
+    std::unique_ptr<QualityProbe> qualityProbe_;
     AVCodecContext* codec_ = nullptr;
     AVBufferRef* device_ = nullptr;
     AVBufferRef* frames_ = nullptr;
@@ -79,6 +84,7 @@ class VideoEncoder {
         return size_t(std::count_if(readbacks_.begin(), readbacks_.end(),
                                     [](const auto& job) { return job.pending; }));
     }
+    VideoEncoder();
     ~VideoEncoder();
     void open(const Config& config, Capture* capture, Size input, bool synthetic = false);
     Track track() const;
