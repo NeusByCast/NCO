@@ -524,7 +524,7 @@ void UI::save(bool update) {
     }
     invalidate();
 }
-void UI::refresh() {
+bool UI::refreshSources() {
     auto old = !sources_.empty() ? sources_[size_t(sourceIndex_)] : Source{};
     sources_ = sources(hwnd_);
     sourceIndex_ = 0;
@@ -536,6 +536,12 @@ void UI::refresh() {
         if (sources_[i].monitor == old.monitor && sources_[i].window == old.window &&
             sources_[i].custom == old.custom)
             sourceIndex_ = int(i);
+    const auto selected = sources_.empty() ? Source{} : sources_[size_t(sourceIndex_)];
+    return selected.monitor != old.monitor || selected.window != old.window ||
+           selected.custom != old.custom || memcmp(&selected.region, &old.region, sizeof(RECT)) != 0;
+}
+void UI::refresh() {
+    refreshSources();
     mics_ = audioDevices(true);
     speakers_ = audioDevices(false);
 }
@@ -580,16 +586,16 @@ void UI::dashboard() {
     button(
         L"source", source, sr,
         [this, sr] {
+            // Discover windows opened since startup, only when the selector is
+            // requested. Preserve the current source without restarting capture.
+            if (refreshSources()) save();
             std::vector<std::wstring> names;
-            for (auto& s : sources_) {
-                if (s.window) {
-                    wchar_t title[512]{};
-                    if (GetWindowTextW(s.window, title, 512))
-                        s.name = std::wstring(L"Window · ") + title;
-                }
-                names.push_back(s.name);
-            }
+            for (const auto& s : sources_) names.push_back(s.name);
             dropdown(sr, names, sourceIndex_, [this](int i) {
+                if (sources_[size_t(i)].window && IsIconic(sources_[size_t(i)].window)) {
+                    notify("Restore this window, then select it again to preview or record it.", false);
+                    return;
+                }
                 sourceIndex_ = i;
                 save();
             });

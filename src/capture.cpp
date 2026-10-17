@@ -50,7 +50,7 @@ std::vector<Source> sources(HWND exclude) {
             GetWindowThreadProcessId(h, &processId);
             DWORD cloaked = 0;
             DwmGetWindowAttribute(h, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
-            if (processId == GetCurrentProcessId() || cloaked || IsIconic(h) ||
+            if (processId == GetCurrentProcessId() || cloaked ||
                 (GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW))
                 return TRUE;
             HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
@@ -72,8 +72,10 @@ std::vector<Source> sources(HWND exclude) {
             GetWindowTextW(h, t, 256);
             RECT rc{};
             GetClientRect(h, &rc);
-            if (rc.right > 0 && rc.bottom > 0)
-                a->r->push_back({std::wstring(L"Window · ") + t, nullptr, h});
+            const bool minimized = IsIconic(h) != FALSE;
+            if (minimized || (rc.right > 0 && rc.bottom > 0))
+                a->r->push_back({std::wstring(L"Window · ") + t +
+                                    (minimized ? L" · minimized" : L""), nullptr, h});
             return TRUE;
         },
         reinterpret_cast<LPARAM>(&a));

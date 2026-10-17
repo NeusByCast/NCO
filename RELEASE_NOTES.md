@@ -1,5 +1,7 @@
 # NCO 0.4
 
+- Opening the capture-source selector discovers current windows, preserving the selected display/window/region without periodic scanning or audio-device enumeration. Minimized windows remain listed and ask to be restored before selection. Browser windows show their active tab title; tabs within one browser window are not separate window-capture sources. Recording and preview rendering are unchanged.
+
 - Region selection requires an explicit mouse drag; it ignores the release that opened the selector. Selecting a new area replaces the previous custom-region entry.
 - Controls activate on mouse release. Dropdowns reveal from the edge next to their field, constrain their viewport, and disable clipped rows during animation. Hotkey warnings have separate space below their row.
 - Window source titles refresh when browser tabs change. Source changes clear old preview pixels immediately and reject frames from previous configurations; WGC consumes the newest queued frame.

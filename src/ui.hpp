@@ -105,6 +105,7 @@ class UI {
     void popup();
     void dismissPopup();
     void save(bool update = true);
+    bool refreshSources();
     void refresh();
     void notify(std::string msg, bool error);
     void toast(std::wstring msg);
