@@ -1,4 +1,5 @@
 #include "ui.hpp"
+#include <fstream>
 #include <shellapi.h>
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -26,6 +27,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                 }
                 result = 0;
             } else {
+                {
+                    // Reopening an existing instance must retain its current log.
+                    std::ofstream freshLog(nco::appDir() / L"diagnostic.log", std::ios::trunc);
+                }
                 nco::UI app(instance, smoke);
                 result = app.run(show);
             }
