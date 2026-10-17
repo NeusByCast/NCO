@@ -27,6 +27,8 @@ class OverlayTests(unittest.TestCase):
                 self.assertEqual((target / "portfile.cmake").read_text().count("nco-amf-timeout.patch"), 1)
                 self.assertEqual((target / "upstream.patch").read_text(), "upstream patch")
                 self.assertIn("AVERROR(ETIMEDOUT)", (target / "nco-amf-timeout.patch").read_text())
+                self.assertIn("Encoder did not retain the requested rate control mode", (target / "nco-amf-timeout.patch").read_text())
+                self.assertIn("qp.vt = VT_UI8", (target / "nco-amf-timeout.patch").read_text())
             with self.assertRaises(ValueError):
                 module.prepare(root / "vcpkg", source.parent)
             self.assertEqual((source / "portfile.cmake").read_text(), original)

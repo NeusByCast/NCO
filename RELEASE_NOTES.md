@@ -72,3 +72,10 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 
 - Enabling replay after an encoder drain has started now waits for the drain to complete, releases the finished worker, and starts a new replay pipeline. Previously the replay flag could close the recording early and retain an encoder that no longer accepted frames.
 - Added a focused stop-decision check for replay changes during a drain. Physical GPU capture, folder-picker permissions and every fallback encoder's rate-control behavior are not certified by the existing synthetic recording checks.
+
+### Recording option verification
+
+- Corrected VP9 CQP/CBR mode selection and Media Foundation's missing explicit rate control. Fixed the Windows encoder's quantizer argument to use the API's required UINT64 type; rejected modes/quantizers now fail initialization, and available mode readback must match the request.
+- Added VBR quantizer limits for software H.264, NVENC and H.264/HEVC QSV so a manual bitrate no longer bypasses the preset's detail limit. NVENC forced keyframes are IDRs for decodable recording/replay boundaries. Existing processing presets, capture routing and bounded queues remain in use.
+- Expanded verification to 180 H.264/VP9 encode/decode cases covering FPS, presets, rate modes and automatic/manual bitrates; checks use runtime encoder modes and actual packet quantizers. Every resolution preset, including 4K, is decoded from each software encoder. Available hardware encoders are attempted and unavailable devices are reported separately.
+- Recording UI checks cover all frame rates, presets, resolution choices, formats, available encoders, replay toggle/durations, numeric persistence, CQP bitrate disabling and recording locks. Native folder selection/cancellation and Unicode folder writes are exercised. Reports are included as a separate Windows build artifact.

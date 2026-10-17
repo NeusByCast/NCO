@@ -42,6 +42,11 @@ int main() {
     }
     CHECK(resolution(0, 0, 0, {1921, 1081}).w == 1920);
     CHECK(resolution(5, 1001, 701, {}).h == 700);
+    const Size presetSizes[] = {{1920, 1080}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}, {642, 362}};
+    for (int mode = 0; mode <= 5; ++mode) {
+        const auto size = resolution(mode, 643, 363, {1920, 1080});
+        CHECK(size.w == presetSizes[mode].w && size.h == presetSizes[mode].h);
+    }
     auto wide = letterbox({2560, 1080}, {1920, 1080});
     CHECK(wide.w == 1920 && wide.h == 810 && wide.y == 134);
     auto tall = letterbox({1080, 1920}, {1920, 1080});

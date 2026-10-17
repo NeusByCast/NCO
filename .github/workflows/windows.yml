@@ -30,7 +30,7 @@ jobs:
             ~/AppData/Local/vcpkg/archives
           key: nco-static-v2-${{ hashFiles('vcpkg.json', 'triplets/**', 'patches/**', 'tools/prepare_vcpkg.py') }}
           restore-keys: nco-static-v1-
-      - name: Prepare FFmpeg with bounded AMF waits
+      - name: Prepare FFmpeg encoder fixes
         run: |
           python -m unittest discover -s tests -p "test_*.py"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -70,7 +70,7 @@ jobs:
       - name: Core tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Synthetic media tests
-        timeout-minutes: 3
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $p = Start-Process build/Release/NCO.exe -ArgumentList "--self-test" -Wait -PassThru
@@ -126,3 +126,11 @@ jobs:
         with:
           name: NCO-build-and-test
           path: output/NCO-Setup.exe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: NCO-verification
+          path: |
+            nco-self-test/results.txt
+            nco-self-test/ui-results.txt
+            nco-self-test/recording-matrix.csv

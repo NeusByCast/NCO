@@ -63,13 +63,14 @@ void UI::smokeControls() {
         clickControl(L"option" + std::to_wstring(index));
         require(!popup_.open, "Dropdown did not close after selection");
     };
-    auto number = [&](const wchar_t* id, int value, int Config::*member) {
+    auto number = [&](const wchar_t* id, int value, int Config::*member, int expected = -1) {
         clickControl(id);
         require(edit_ != nullptr, "Numeric edit did not open");
         SetWindowTextW(edit_, std::to_wstring(value).c_str());
         SendMessageW(edit_, WM_KEYDOWN, VK_RETURN, 0);
         draw();
-        require(!edit_ && cfg_.*member == value && Config::load().*member == value,
+        const int committed = expected < 0 ? value : expected;
+        require(!edit_ && cfg_.*member == committed && Config::load().*member == committed,
                 "Numeric edit did not commit and persist");
     };
     try {
@@ -115,9 +116,11 @@ void UI::smokeControls() {
         target_->BeginDraw();
         settings();
         check(target_->EndDraw(), "Replay settings regression rendering");
-        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
-            return control.id == L"fps" && !control.enabled;
-        }), "Active recording must protect its encoder configuration");
+        for (const wchar_t* id : {L"fps", L"resolution", L"quality", L"bitrate", L"ratecontrol",
+                                  L"encoder", L"format", L"recorddir", L"remux"})
+            require(std::any_of(controls_.begin(), controls_.end(), [&](const auto& control) {
+                return control.id == id && !control.enabled;
+            }), "Active recording must protect its encoder/output configuration");
         stats_ = previousStats;
         draw();
         report << "PASS replay allows Recording settings while active recording remains protected\n";
@@ -139,27 +142,109 @@ void UI::smokeControls() {
         clickControl(L"fps");
         require(popup_.items.size() == 3, "Frame rate dropdown must offer only 15, 30 and 60 FPS");
         clickControl(L"fps");
-        choose(L"fps", 0);
-        require(cfg_.fps == 15, "FPS dropdown did not commit");
-        choose(L"quality", 4);
-        require(cfg_.quality == 4, "Quality dropdown did not commit");
-        choose(L"resolution", 5);
-        number(L"width", 1280, &Config::width);
-        number(L"height", 720, &Config::height);
+        for (int i = 0; i < 3; ++i) {
+            choose(L"fps", i);
+            require(cfg_.fps == (i == 0 ? 15 : i == 1 ? 30 : 60) && Config::load().fps == cfg_.fps,
+                    "FPS dropdown did not commit and persist");
+        }
+        for (int i = 0; i < 5; ++i) {
+            choose(L"quality", i);
+            require(cfg_.quality == i && Config::load().quality == i, "Quality preset did not persist");
+        }
+        for (int i = 0; i < 6; ++i) {
+            choose(L"resolution", i);
+            require(cfg_.resolutionMode == i && Config::load().resolutionMode == i,
+                    "Resolution dropdown did not persist");
+        }
+        number(L"width", 1281, &Config::width, 1280);
+        number(L"height", 721, &Config::height, 720);
         number(L"bitrate", 0, &Config::bitrateKbps);
         require(cfg_.bitrateKbps == 0, "Automatic bitrate fallback cannot be selected");
         number(L"bitrate", 8000, &Config::bitrateKbps);
         choose(L"ratecontrol", 1);
         require(cfg_.rateControl == 1, "Rate control dropdown did not commit CQP");
+        require(std::any_of(controls_.begin(), controls_.end(), [](const auto& control) {
+            return control.id == L"bitrate" && !control.enabled;
+        }), "CQP exposed a bitrate field that it does not use");
         choose(L"ratecontrol", 2);
-        require(cfg_.rateControl == 2, "Rate control dropdown did not commit CBR");
+        require(cfg_.rateControl == 2 && cfg_.bitrateKbps == 8000,
+                "CBR did not restore the saved bitrate");
         choose(L"ratecontrol", 0);
         require(cfg_.rateControl == 0, "Rate control dropdown did not restore VBR");
         toggle(L"remux", &Config::remux);
-        choose(L"format", 3);
-        require(cfg_.format == "webm", "Container dropdown did not commit");
+        const char* formats[] = {"mp4", "mkv", "mov", "webm"};
+        for (int format = 0; format < 4; ++format) {
+            choose(L"format", format);
+            require(cfg_.format == formats[format] && Config::load().format == cfg_.format,
+                    "Container selection did not persist");
+            std::vector<std::string> names{"auto"};
+            for (const auto& encoder : encoders_)
+                if (containerCompatible(cfg_.format, encoder.name)) names.push_back(encoder.name);
+            for (int i = 0; i < int(names.size()); ++i) {
+                choose(L"encoder", i);
+                require(cfg_.encoder == names[size_t(i)] && Config::load().encoder == cfg_.encoder,
+                        "Available encoder choice did not persist");
+            }
+        }
         choose(L"encoder", 0);
-        require(cfg_.encoder == "auto", "Auto encoder selection did not commit");
+        {
+            // Check the actual toggle without requesting CI capture hardware.
+            auto engine = std::move(engine_);
+            try { toggle(L"replayenabled", &Config::replay); }
+            catch (...) { engine_ = std::move(engine); throw; }
+            engine_ = std::move(engine);
+        }
+        {
+            const auto selectedFolder = std::filesystem::absolute(
+                std::filesystem::path(L"nco-self-test") / L"Folder picker \u03a9 with spaces");
+            std::filesystem::create_directories(selectedFolder);
+            // Leave disk settings unchanged until the real picker accepts it.
+            cfg_.directory = selectedFolder.wstring();
+            draw();
+            auto picker = [&](bool accept) {
+                std::atomic<bool> sent = false;
+                const DWORD uiThread = GetWindowThreadProcessId(hwnd_, nullptr);
+                std::jthread driver([&](std::stop_token stop) {
+                    const auto begin = clockUs(), deadline = begin + 15000000;
+                    HWND dialog = nullptr;
+                    while (!stop.stop_requested() && clockUs() < deadline) {
+                        struct Search { HWND owner, dialog; } search{hwnd_, nullptr};
+                        EnumThreadWindows(uiThread, [](HWND window, LPARAM data) -> BOOL {
+                            auto& search = *reinterpret_cast<Search*>(data);
+                            wchar_t name[64]{};
+                            GetClassNameW(window, name, 64);
+                            if (GetWindow(window, GW_OWNER) == search.owner &&
+                                std::wstring(name) == L"#32770" && IsWindowVisible(window)) {
+                                search.dialog = window;
+                                return FALSE;
+                            }
+                            return TRUE;
+                        }, reinterpret_cast<LPARAM>(&search));
+                        dialog = search.dialog;
+                        if (dialog && !sent.load() && clockUs() - begin >= 500000) {
+                            HWND button = GetDlgItem(dialog, accept ? IDOK : IDCANCEL);
+                            if (button && IsWindowEnabled(button))
+                                sent = PostMessageW(button, BM_CLICK, 0, 0) != FALSE;
+                        }
+                        Sleep(20);
+                    }
+                    if (!stop.stop_requested()) {
+                        if (dialog) PostMessageW(dialog, WM_CLOSE, 0, 0);
+                        else PostThreadMessageW(uiThread, WM_QUIT, 1, 0);
+                    }
+                });
+                clickControl(L"recorddir");
+                driver.request_stop();
+                driver.join();
+                require(sent, "Native output-folder dialog was not driven");
+                require(std::filesystem::equivalent(cfg_.directory, selectedFolder) &&
+                        std::filesystem::equivalent(Config::load().directory, selectedFolder),
+                        "Folder selection/cancellation changed the wrong saved path");
+            };
+            picker(true);
+            picker(false);
+            report << "PASS native recording-folder picker acceptance/cancellation and Unicode path persistence\n";
+        }
         report << "PASS clean dashboard, mute controls, dropdown re-click dismissal, navigation, recording dropdowns, custom numeric "
                   "fields and remux persistence through real control handlers\n";
         page(2);
@@ -294,7 +379,7 @@ void UI::smokeControls() {
         require(visibleOptions == 3, "Completed popup hid selectable rows");
         popup_.open = popup_.closing = false;
         report << "PASS dropdown stays attached without scrolling the page or exposing hidden hit targets\n";
-        report << "UNVERIFIED capture/audio/replay operation, folder dialogs, every hardware encoder, "
+        report << "NOT EXERCISED by this UI suite: live capture/audio/replay operation, every hardware encoder, "
                   "notification exclusion, real DPI scaling and animation quality\n";
     } catch (const std::exception& error) {
         report << "FAIL " << error.what() << "\n";

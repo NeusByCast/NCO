@@ -35,3 +35,63 @@
                  res = ctx->encoder->pVtbl->SubmitInput(ctx->encoder, (AMFData*)surface);
                  if (res != AMF_INPUT_FULL)
                      break;
+--- a/libavcodec/mfenc.c
++++ b/libavcodec/mfenc.c
+@@ -838,12 +838,34 @@
+     IMFAttributes_SetUINT32(type, &MF_MT_AVG_BITRATE, avctx->bit_rate);
+ 
+     // Note that some of the ICodecAPI options must be set before SetOutputType.
++    if (c->opt_enc_rc >= 0 && !c->codec_api) {
++        av_log(avctx, AV_LOG_ERROR, "Requested rate control requires ICodecAPI support\n");
++        return AVERROR(ENOSYS);
++    }
+     if (c->codec_api) {
+         if (avctx->bit_rate)
+             ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonMeanBitRate, FF_VAL_VT_UI4(avctx->bit_rate));
+ 
+-        if (c->opt_enc_rc >= 0)
+-            ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonRateControlMode, FF_VAL_VT_UI4(c->opt_enc_rc));
++        if (c->opt_enc_rc >= 0) {
++            HRESULT status = ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonRateControlMode,
++                                               FF_VAL_VT_UI4(c->opt_enc_rc));
++            VARIANT actual = {0};
++            if (FAILED(status)) {
++                av_log(avctx, AV_LOG_ERROR, "Requested rate control mode %d was rejected: %s\n",
++                       c->opt_enc_rc, ff_hr_str(status));
++                return AVERROR_EXTERNAL;
++            }
++            status = ICodecAPI_GetValue(c->codec_api, &ff_CODECAPI_AVEncCommonRateControlMode, &actual);
++            if (SUCCEEDED(status)) {
++                status = VariantChangeType(&actual, &actual, 0, VT_UI4);
++                if (FAILED(status) || actual.ulVal != c->opt_enc_rc) {
++                    VariantClear(&actual);
++                    av_log(avctx, AV_LOG_ERROR, "Encoder did not retain the requested rate control mode\n");
++                    return AVERROR_EXTERNAL;
++                }
++            }
++            VariantClear(&actual);
++        }
+ 
+         if (c->opt_enc_quality >= 0)
+             ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonQuality, FF_VAL_VT_UI4(c->opt_enc_quality));
+@@ -860,8 +882,18 @@
+         if(avctx->compression_level >= 0)
+             ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonQualityVsSpeed, FF_VAL_VT_UI4(avctx->compression_level));
+ 
+-        if(avctx->global_quality > 0)
+-            ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncVideoEncodeQP, FF_VAL_VT_UI4(avctx->global_quality ));
++        if(avctx->global_quality > 0) {
++            /* AVEncVideoEncodeQP requires UINT64 (VT_UI8), not VT_UI4. */
++            VARIANT qp = {0};
++            HRESULT status;
++            qp.vt = VT_UI8;
++            qp.ullVal = avctx->global_quality;
++            status = ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncVideoEncodeQP, &qp);
++            if (FAILED(status)) {
++                av_log(avctx, AV_LOG_ERROR, "Requested fixed quantizer was rejected: %s\n", ff_hr_str(status));
++                return AVERROR_EXTERNAL;
++            }
++        }
+ 
+         // Always set the number of b-frames. Qualcomm's HEVC encoder on SD835
+         // defaults this to 1, and that setting is buggy with many of the

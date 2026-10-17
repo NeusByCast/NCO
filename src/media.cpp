@@ -3,10 +3,12 @@
 #include <fstream>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <utility>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include <codecapi.h>
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
@@ -138,6 +140,7 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     // constrained to its target. CQP intentionally ignores bitrate limits.
     c->rc_max_rate = rateControl == 0 ? c->bit_rate * 3 / 2
                     : rateControl == 2 ? c->bit_rate : 0;
+    c->rc_min_rate = rateControl == 2 ? c->bit_rate : 0;
     c->rc_buffer_size = rateControl == 1 ? 0 : int(std::min<int64_t>(
         int64_t(c->rc_max_rate) * 2, std::numeric_limits<int>::max()));
     c->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -146,28 +149,36 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     c->color_primaries = AVCOL_PRI_BT709;
     c->color_trc = AVCOL_TRC_BT709;
     if (name == "libx264") {
-        av_opt_set(c->priv_data, "preset", "ultrafast", 0);
-        av_opt_set(c->priv_data, "tune", "zerolatency", 0);
+        avcheck(av_opt_set(c->priv_data, "preset", "ultrafast", 0), "H.264 processing preset");
+        avcheck(av_opt_set(c->priv_data, "tune", "zerolatency", 0), "H.264 latency setting");
+        constexpr int qp[] = {36, 32, 27, 23, 19};
         if (rateControl == 1) {
-            constexpr int qp[] = {36, 32, 27, 23, 19};
-            av_opt_set_int(c->priv_data, "qp", qp[std::clamp(cfg.quality, 0, 4)], 0);
-        } else if (rateControl == 0 && !cfg.bitrateKbps) {
-            constexpr int crf[] = {32, 28, 23, 20, 17};
-            av_opt_set_int(c->priv_data, "crf", crf[cfg.quality], 0);
+            avcheck(av_opt_set_int(c->priv_data, "qp", qp[std::clamp(cfg.quality, 0, 4)], 0), "H.264 fixed quantizer");
+        } else if (rateControl == 0) {
+            c->qmax = qp[std::clamp(cfg.quality, 0, 4)] + 3;
+            if (!cfg.bitrateKbps) {
+                constexpr int crf[] = {32, 28, 23, 20, 17};
+                avcheck(av_opt_set_int(c->priv_data, "crf", crf[cfg.quality], 0), "H.264 quality target");
+            }
         }
         if (rateControl == 2)
-            av_opt_set(c->priv_data, "nal-hrd", "cbr", 0);
+            avcheck(av_opt_set(c->priv_data, "nal-hrd", "cbr", 0), "H.264 constant bitrate");
         c->thread_count = std::clamp(int(std::thread::hardware_concurrency() / 2), 1, 8);
     }
     if (name.find("nvenc") != std::string::npos) {
-        av_opt_set(c->priv_data, "preset", cfg.quality >= 3 ? "p5" : cfg.quality >= 1 ? "p4" : "p3", 0);
-        av_opt_set(c->priv_data, "tune", cfg.quality >= 2 ? "hq" : "ull", 0);
-        av_opt_set_int(c->priv_data, "rc-lookahead", 0, 0);
+        avcheck(av_opt_set(c->priv_data, "preset", cfg.quality >= 3 ? "p5" : cfg.quality >= 1 ? "p4" : "p3", 0), "NVENC processing preset");
+        avcheck(av_opt_set(c->priv_data, "tune", cfg.quality >= 2 ? "hq" : "ull", 0), "NVENC tuning");
+        avcheck(av_opt_set_int(c->priv_data, "rc-lookahead", 0, 0), "NVENC lookahead");
+        avcheck(av_opt_set_int(c->priv_data, "forced-idr", 1, 0), "NVENC recording/replay keyframes");
         const char* rc = rateControl == 1 ? "constqp" : rateControl == 2 ? "cbr" : "vbr";
-        av_opt_set(c->priv_data, "rc", rc, 0);
+        avcheck(av_opt_set(c->priv_data, "rc", rc, 0), "NVENC rate control");
+        constexpr int qp[] = {36, 32, 27, 23, 19};
         if (rateControl == 1) {
-            constexpr int qp[] = {36, 32, 27, 23, 19};
-            av_opt_set_int(c->priv_data, "qp", qp[std::clamp(cfg.quality, 0, 4)], 0);
+            avcheck(av_opt_set_int(c->priv_data, "qp", qp[std::clamp(cfg.quality, 0, 4)], 0), "NVENC fixed quantizer");
+        } else if (rateControl == 0) {
+            const int scale = name == "av1_nvenc" ? 4 : 1;
+            avcheck(av_opt_set_int(c->priv_data, "qmin", 0, 0), "NVENC minimum quantizer");
+            avcheck(av_opt_set_int(c->priv_data, "qmax", (qp[std::clamp(cfg.quality, 0, 4)] + 3) * scale, 0), "NVENC maximum quantizer");
         }
     }
     if (name.find("amf") != std::string::npos) {
@@ -213,20 +224,46 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         av_opt_set_int(c->priv_data, "async_depth", 3, 0);
     }
     if (name.find("_mf") != std::string::npos) {
-        av_opt_set_int(c->priv_data, "hw_encoding", 1, 0);
-        av_opt_set(c->priv_data, "scenario", "display_remoting", 0);
+        avcheck(av_opt_set_int(c->priv_data, "hw_encoding", 1, 0), "Windows hardware encoding");
+        avcheck(av_opt_set(c->priv_data, "scenario", "display_remoting", 0), "Windows capture scenario");
+        const int mode = rateControl == 1 ? eAVEncCommonRateControlMode_CQP
+                       : rateControl == 2 ? eAVEncCommonRateControlMode_CBR
+                                          : eAVEncCommonRateControlMode_PeakConstrainedVBR;
+        avcheck(av_opt_set_int(c->priv_data, "rate_control", mode, 0), "Windows rate control");
+        if (rateControl == 1) {
+            constexpr int qp[] = {36, 32, 27, 23, 19};
+            // Media Foundation consumes the raw QP, not FF_QP2LAMBDA units.
+            c->global_quality = qp[std::clamp(cfg.quality, 0, 4)];
+        }
     }
-    if (name.find("qsv") != std::string::npos)
-        av_opt_set(c->priv_data, "preset", "veryfast", 0);
+    if (name.find("qsv") != std::string::npos) {
+        avcheck(av_opt_set(c->priv_data, "preset", "veryfast", 0), "QSV processing preset");
+        if (av_opt_find(c->priv_data, "look_ahead", nullptr, 0, 0))
+            avcheck(av_opt_set_int(c->priv_data, "look_ahead", 0, 0), "QSV lookahead");
+        if (rateControl == 0 && name != "av1_qsv") {
+            constexpr int qp[] = {36, 32, 27, 23, 19};
+            c->qmax = qp[std::clamp(cfg.quality, 0, 4)] + 3;
+        }
+    }
     if (name.find("qsv") != std::string::npos && rateControl == 1) {
         constexpr int qp[] = {36, 32, 27, 23, 19};
         c->flags |= AV_CODEC_FLAG_QSCALE;
         c->global_quality = qp[std::clamp(cfg.quality, 0, 4)] * FF_QP2LAMBDA;
     }
     if (name == "libvpx-vp9") {
-        av_opt_set(c->priv_data, "deadline", "realtime", 0);
-        av_opt_set_int(c->priv_data, "cpu-used", 8, 0);
-        av_opt_set_int(c->priv_data, "lag-in-frames", 0, 0);
+        avcheck(av_opt_set(c->priv_data, "deadline", "realtime", 0), "VP9 processing deadline");
+        avcheck(av_opt_set_int(c->priv_data, "cpu-used", 8, 0), "VP9 processing speed");
+        avcheck(av_opt_set_int(c->priv_data, "lag-in-frames", 0, 0), "VP9 frame delay");
+        constexpr int qp[] = {44, 38, 32, 26, 20};
+        const int selectedQp = qp[std::clamp(cfg.quality, 0, 4)];
+        if (rateControl == 1) {
+            // Zero bitrate plus CRF selects libvpx VPX_Q. Equal bounds keep QP fixed.
+            c->bit_rate = 0;
+            c->qmin = c->qmax = selectedQp;
+            avcheck(av_opt_set_int(c->priv_data, "crf", selectedQp, 0), "VP9 constant quality");
+        } else if (rateControl == 0) {
+            c->qmax = selectedQp + 3;
+        }
         c->thread_count = 4;
     }
 }
@@ -264,6 +301,93 @@ void encoderConfigurationSelfTest() {
                 (rate == 2 && c->rc_max_rate != c->bit_rate))
                 throw std::runtime_error("AMF quality/rate-control settings regressed");
         }
+    }
+    // Every compiled choice uses the same configuration function as recordings.
+    // Software encoders are also opened so their selected runtime mode is checked.
+    static thread_local std::string* captured = nullptr;
+    const auto captureLog = [](void*, int level, const char* format, va_list args) {
+        if (!captured || level > AV_LOG_DEBUG) return;
+        char line[4096]{};
+        vsnprintf(line, sizeof(line), format, args);
+        captured->append(line);
+    };
+    for (const char* name : {"libx264", "libvpx-vp9", "h264_nvenc", "hevc_nvenc", "av1_nvenc",
+                             "h264_qsv", "hevc_qsv", "av1_qsv", "h264_mf", "hevc_mf"}) {
+        const auto codec = avcodec_find_encoder_by_name(name);
+        if (!codec) continue; // Uncompiled encoders are absent from the selector.
+        for (int quality = 0; quality < 5; ++quality)
+            for (int rate = 0; rate < 3; ++rate)
+                for (int requestedBitrate : {0, 8000}) {
+                    auto release = [](AVCodecContext* c) { avcodec_free_context(&c); };
+                    std::unique_ptr<AVCodecContext, decltype(release)> c(avcodec_alloc_context3(codec), release);
+                    if (!c) throw std::bad_alloc();
+                    Config config;
+                    config.quality = quality;
+                    config.rateControl = rate;
+                    config.bitrateKbps = requestedBitrate;
+                    configureVideo(c.get(), name, config, {320, 180}, AV_PIX_FMT_YUV420P);
+                    auto require = [&](bool ok) {
+                        if (!ok) throw std::runtime_error(std::string(name) + " Recording settings did not apply");
+                    };
+                    auto option = [&](const char* key) {
+                        int64_t value = -1;
+                        avcheck(av_opt_get_int(c->priv_data, key, 0, &value), key);
+                        return value;
+                    };
+                    auto namedOption = [&](const char* key, const char* unit) {
+                        const auto value = av_opt_find(c->priv_data, key, unit, 0, 0);
+                        require(value != nullptr);
+                        return value->default_val.i64;
+                    };
+                    constexpr int qp[] = {36, 32, 27, 23, 19};
+                    const std::string encoder(name);
+                    const bool vp9 = encoder == "libvpx-vp9";
+                    const int64_t target = requestedBitrate ? requestedBitrate * 1000
+                        : bitrate({320, 180}, 60, quality, encoder.find("264") == std::string::npos);
+                    require(c->rc_min_rate == (rate == 2 ? target : 0));
+                    require(c->rc_max_rate == (rate == 0 ? target * 3 / 2 : rate == 2 ? target : 0));
+                    require(c->bit_rate == (vp9 && rate == 1 ? 0 : target));
+                    require(!c->max_b_frames && c->gop_size == 120);
+                    if (encoder.find("nvenc") != std::string::npos) {
+                        require(option("rc") == namedOption(rate == 1 ? "constqp" : rate == 2 ? "cbr" : "vbr", "rc"));
+                        require(option("forced-idr") == 1 && option("rc-lookahead") == 0);
+                        if (rate == 1) require(option("qp") == qp[quality]);
+                        if (rate == 0) require(option("qmax") == (qp[quality] + 3) * (encoder == "av1_nvenc" ? 4 : 1));
+                    } else if (encoder.find("_mf") != std::string::npos) {
+                        require(option("rate_control") == (rate == 1 ? eAVEncCommonRateControlMode_CQP
+                            : rate == 2 ? eAVEncCommonRateControlMode_CBR : eAVEncCommonRateControlMode_PeakConstrainedVBR));
+                        require(option("hw_encoding") == 1);
+                        if (rate == 1) require(c->global_quality == qp[quality]);
+                    } else if (encoder.find("qsv") != std::string::npos) {
+                        require(bool(c->flags & AV_CODEC_FLAG_QSCALE) == (rate == 1));
+                        if (rate == 1) require(c->global_quality == qp[quality] * FF_QP2LAMBDA);
+                        if (rate == 0 && encoder != "av1_qsv") require(c->qmax == qp[quality] + 3);
+                    } else {
+                        std::string log;
+                        captured = &log;
+                        const int previousLevel = av_log_get_level();
+                        av_log_set_callback(captureLog);
+                        av_log_set_level(AV_LOG_DEBUG);
+                        const int opened = avcodec_open2(c.get(), codec, nullptr);
+                        av_log_set_level(previousLevel);
+                        av_log_set_callback(mediaLog);
+                        captured = nullptr;
+                        avcheck(opened, "Open software encoder for rate-control verification");
+                        if (vp9) {
+                            const std::string marker = "rc_end_usage:";
+                            const auto at = log.rfind(marker);
+                            require(at != std::string::npos);
+                            const long actualMode = std::strtol(log.c_str() + at + marker.size(), nullptr, 10);
+                            require(actualMode == (rate == 1 ? 3 : rate == 2 ? 1 : 0)); // VPX_Q / CBR / VBR
+                            if (rate == 1) require(c->qmin == c->qmax && option("crf") == c->qmax);
+                        } else {
+                            const char* mode = rate == 1 ? "rc=cqp" : rate == 2 ? "rc=cbr" : requestedBitrate ? "rc=abr" : "rc=crf";
+                            require(log.find(mode) != std::string::npos);
+                            if (rate == 2) require(log.find("nal_hrd=cbr") != std::string::npos);
+                            if (rate == 0) require(c->qmax == qp[quality] + 3);
+                        }
+                    }
+                }
     }
     Packet packet{std::shared_ptr<AVPacket>(av_packet_alloc(), [](AVPacket* p) { av_packet_free(&p); }), 0, {1, 60}};
     if (!packet.p) throw std::bad_alloc();

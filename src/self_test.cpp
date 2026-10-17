@@ -13,7 +13,8 @@ void require(bool ok, const std::string& message) {
 }
 
 struct StreamResult {
-    size_t packets = 0;
+    size_t packets = 0, decodedFrames = 0;
+    uint64_t bytes = 0;
     int64_t first = INT64_MAX, end = INT64_MIN;
     AVCodecID codec = AV_CODEC_ID_NONE;
     int width = 0, height = 0;
@@ -21,7 +22,7 @@ struct StreamResult {
     AVColorSpace space = AVCOL_SPC_UNSPECIFIED;
 };
 
-std::vector<StreamResult> inspect(const std::filesystem::path& path) {
+std::vector<StreamResult> inspect(const std::filesystem::path& path, bool decodeVideo = false) {
     AVFormatContext* in = nullptr;
     avcheck(avformat_open_input(&in, utf8(path.wstring()).c_str(), nullptr, nullptr), "Test open");
     AVPacket* packet = av_packet_alloc();
@@ -36,17 +37,58 @@ std::vector<StreamResult> inspect(const std::filesystem::path& path) {
             result[i].range = p->color_range;
             result[i].space = p->color_space;
         }
+        auto releaseDecoder = [](AVCodecContext* c) { avcodec_free_context(&c); };
+        auto releaseFrame = [](AVFrame* f) { av_frame_free(&f); };
+        std::unique_ptr<AVCodecContext, decltype(releaseDecoder)> decoder(nullptr, releaseDecoder);
+        std::unique_ptr<AVFrame, decltype(releaseFrame)> decoded(nullptr, releaseFrame);
+        const int videoStream = av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        if (decodeVideo && videoStream >= 0) {
+            const auto parameters = in->streams[videoStream]->codecpar;
+            const auto codec = avcodec_find_decoder(parameters->codec_id);
+            require(codec != nullptr, "Verification decoder is unavailable");
+            decoder.reset(avcodec_alloc_context3(codec));
+            decoded.reset(av_frame_alloc());
+            require(decoder && decoded, "Cannot allocate verification decoder");
+            avcheck(avcodec_parameters_to_context(decoder.get(), parameters), "Decode parameters");
+            decoder->thread_count = 1;
+            decoder->err_recognition = AV_EF_EXPLODE;
+            avcheck(avcodec_open2(decoder.get(), codec, nullptr), "Open verification decoder");
+        }
+        auto receiveFrames = [&] {
+            while (decoder) {
+                const int received = avcodec_receive_frame(decoder.get(), decoded.get());
+                if (received == AVERROR(EAGAIN) || received == AVERROR_EOF) break;
+                avcheck(received, "Decode saved recording frame");
+                auto& stream = result[size_t(videoStream)];
+                require(!(decoded->flags & AV_FRAME_FLAG_CORRUPT) &&
+                        decoded->width == stream.width && decoded->height == stream.height,
+                        "Saved recording has a corrupt frame or incorrect decoded dimensions");
+                ++stream.decodedFrames;
+                av_frame_unref(decoded.get());
+            }
+        };
         int status;
         while ((status = av_read_frame(in, packet)) >= 0) {
             auto& s = result.at(size_t(packet->stream_index));
             auto tb = in->streams[packet->stream_index]->time_base;
             require(packet->pts != AV_NOPTS_VALUE, "Output packet has no presentation timestamp");
             ++s.packets;
+            s.bytes += size_t(packet->size);
             s.first = std::min(s.first, av_rescale_q(packet->pts, tb, {1, 1000000}));
             s.end = std::max(s.end, av_rescale_q(packet->pts + packet->duration, tb, {1, 1000000}));
+            if (decoder && packet->stream_index == videoStream) {
+                avcheck(avcodec_send_packet(decoder.get(), packet), "Submit saved packet to decoder");
+                receiveFrames();
+            }
             av_packet_unref(packet);
         }
         require(status == AVERROR_EOF, "Output did not end cleanly");
+        if (decoder) {
+            avcheck(avcodec_send_packet(decoder.get(), nullptr), "Drain verification decoder");
+            receiveFrames();
+            require(result[size_t(videoStream)].decodedFrames == result[size_t(videoStream)].packets,
+                    "Saved recording packet/frame counts do not match");
+        }
         for (auto& s : result)
             require(s.packets > 0 && s.end > s.first, "Empty output stream");
         av_packet_free(&packet);
@@ -114,7 +156,7 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
     require(verifyFile(path, false), "Completed recording has no readable first keyframe");
     require(sawFirstVideoPacket && firstVideoPacketWasKey,
             "Encoder did not mark its forced first frame as a keyframe");
-    auto streams = inspect(path);
+    auto streams = inspect(path, true);
     require(streams[0].width == 320 && streams[0].height == 180 &&
             streams[0].range == AVCOL_RANGE_MPEG && streams[0].space == AVCOL_SPC_BT709,
             "Encoded resolution or BT.709 limited-range metadata changed");
@@ -194,6 +236,35 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
         require(overwriteRejected && verifyFile(path), "Remux overwrite must be rejected safely");
         require(errors.empty(), errors.empty() ? "" : errors.front());
         require(saved == 3, "Concurrent replay exports did not finish");
+        {
+            const auto folder = dir / L"Selected folder \u03a9 with spaces";
+            const auto recording = uniquePath(folder, "NCO_", "mkv");
+            const auto replay = uniquePath(folder, "Replay_", "mkv");
+            const auto another = uniquePath(folder, "NCO_", "mkv");
+            require(recording != another, "Output folder generated duplicate names");
+            std::vector<std::string> folderErrors;
+            {
+                DiskWriter writer([&](std::string event, bool error) {
+                    if (error) { std::lock_guard lock(eventsMutex); folderErrors.push_back(event); }
+                });
+                writer.open(recording, tracks, false, "mkv");
+                for (auto& packet : packets) writer.write(packet, 0);
+                writer.close();
+                writer.replay(replay, tracks, ring.snapshot());
+            }
+            require(folderErrors.empty() && inspect(recording, true)[0].decodedFrames == 90 &&
+                    inspect(replay, true)[0].decodedFrames > 0,
+                    "Recording or replay failed in the selected Unicode output folder");
+            const auto blocked = folder / "regular-file";
+            { std::ofstream sentinel(blocked); sentinel << "preserve"; }
+            bool rejected = false;
+            try { uniquePath(blocked, "NCO_", "mkv"); }
+            catch (const std::filesystem::filesystem_error&) { rejected = true; }
+            std::ifstream sentinel(blocked);
+            std::string unchanged;
+            sentinel >> unchanged;
+            require(rejected && unchanged == "preserve", "Invalid output folder was accepted or overwritten");
+        }
         require(inspect(dir / "threaded-recording.mp4")[0].packets == 90,
                 "Concurrent export interrupted the recording writer");
         require(!std::filesystem::exists(dir / "threaded-recording.mp4.recovery.mkv"),
@@ -251,15 +322,21 @@ void separateTrackRemux(const std::filesystem::path& dir) {
 }
 
 void videoMatrix(const std::filesystem::path& dir) {
-    for (int fps : {15, 30, 60}) {
+    std::ofstream matrix(dir / "recording-matrix.csv");
+    matrix << "encoder,fps,quality,rate_control,bitrate_kbps,width,height,decoded_frames,qp_avg,qp_max,video_mbps\n";
+    size_t cases = 0;
+    for (const char* name : {"libx264", "libvpx-vp9"}) {
+      for (int fps : {15, 30, 60}) {
         for (int quality = 0; quality < 5; ++quality) {
             for (int rateControl = 0; rateControl < 3; ++rateControl) {
+              double firstCqp = -1;
+              for (int bitrateKbps : {0, 8000}) {
                 Config config;
-                config.bitrateKbps = 0;
+                config.bitrateKbps = bitrateKbps;
                 config.rateControl = rateControl;
                 config.fps = fps;
                 config.quality = quality;
-                config.encoder = "libx264";
+                config.encoder = name;
                 config.format = "mkv";
                 // Exercise native size and custom scaling, including even-dimension rounding.
                 config.resolutionMode = quality % 2 ? 5 : 0;
@@ -268,25 +345,127 @@ void videoMatrix(const std::filesystem::path& dir) {
                 VideoEncoder encoder;
                 encoder.open(config, nullptr, {320, 180}, true);
                 Muxer mux;
-                auto path = dir / ("matrix-" + std::to_string(fps) + "-" +
+                auto path = dir / ("matrix-" + config.encoder + "-" + std::to_string(fps) + "-" +
                                    std::to_string(quality) + "-" +
-                                   std::to_string(rateControl) + ".mkv");
+                                   std::to_string(rateControl) + "-" + std::to_string(bitrateKbps) + ".mkv");
+                auto check = [&](bool ok, const char* message) {
+                    require(ok, path.filename().string() + ": " + message);
+                };
                 mux.open(path, {encoder.track()});
+                double qpSum = 0, qpMax = 0;
+                size_t qpCount = 0;
+                const bool vp9 = config.encoder == "libvpx-vp9";
+                constexpr int h264Qp[] = {36, 32, 27, 23, 19};
+                constexpr int vp9Qp[] = {44, 38, 32, 26, 20};
+                const int selectedQp = vp9 ? vp9Qp[quality] : h264Qp[quality];
+                auto accept = [&](std::vector<Packet> packets) {
+                    for (auto& packet : packets) {
+                        const double actual = packet.quantizer();
+                        check(actual >= 0, "Encoder did not expose its actual quantizer");
+                        qpSum += actual;
+                        qpMax = std::max(qpMax, actual);
+                        ++qpCount;
+                        if (rateControl == 1 && (vp9 || !packet.key()))
+                            check(std::abs(actual - selectedQp) <= 1.1, "CQP did not keep the selected quantizer");
+                        if (rateControl == 0)
+                            check(actual <= selectedQp + 4, "VBR exceeded the preset's quantizer limit");
+                        mux.write(packet);
+                    }
+                };
                 for (int frame = 0; frame < fps; ++frame)
-                    for (auto& p : encoder.synthetic(frame, frame == 0))
-                        mux.write(p);
-                for (auto& p : encoder.flush())
-                    mux.write(p);
+                    accept(encoder.synthetic(frame, frame == 0));
+                accept(encoder.flush());
                 mux.close();
-                auto result = inspect(path);
+                auto result = inspect(path, true);
                 const auto expected = resolution(config.resolutionMode, config.width, config.height, {320, 180});
-                require(result[0].width == expected.w && result[0].height == expected.h,
-                        "Quality preset or rate control changed the recording resolution");
-                require(result[0].packets == size_t(fps), "FPS/quality matrix lost a video frame");
-                require(result[0].end - result[0].first > 850000, "FPS matrix duration incorrect");
+                check(result[0].width == expected.w && result[0].height == expected.h,
+                      "Preset or rate control changed the recording resolution");
+                check(result[0].decodedFrames == size_t(fps) && qpCount == size_t(fps),
+                      "FPS/quality matrix lost a video frame");
+                check(result[0].end - result[0].first > 850000, "FPS matrix duration incorrect");
+                const double average = qpSum / qpCount;
+                if (rateControl == 1) {
+                    if (firstCqp >= 0) check(std::abs(average - firstCqp) < .2, "Bitrate changed CQP quality");
+                    firstCqp = average;
+                }
+                matrix << name << ',' << fps << ',' << quality << ',' << rateControl << ','
+                       << bitrateKbps << ',' << expected.w << ',' << expected.h << ','
+                       << result[0].decodedFrames << ',' << average << ',' << qpMax << ','
+                       << double(result[0].bytes) * 8 / (result[0].end - result[0].first) << '\n';
+                matrix.flush();
+                ++cases;
+              }
+            }
+        }
+      }
+    }
+    require(cases == 180, "Recording matrix did not exercise every case");
+}
+
+void resolutionOutputs(const std::filesystem::path& dir) {
+    for (const char* name : {"libx264", "libvpx-vp9"}) {
+        for (int mode = 0; mode <= 5; ++mode) {
+            Config config;
+            config.encoder = name;
+            config.format = "mkv";
+            config.rateControl = 1;
+            config.resolutionMode = mode;
+            config.width = 643;
+            config.height = 363;
+            VideoEncoder video;
+            video.open(config, nullptr, {128, 72}, true);
+            auto path = dir / ("resolution-" + config.encoder + "-" + std::to_string(mode) + ".mkv");
+            Muxer mux;
+            mux.open(path, {video.track()});
+            for (auto& packet : video.synthetic(0, true)) mux.write(packet);
+            for (auto& packet : video.flush()) mux.write(packet);
+            mux.close();
+            const auto actual = inspect(path, true);
+            const auto expected = resolution(mode, config.width, config.height, {128, 72});
+            require(actual[0].width == expected.w && actual[0].height == expected.h &&
+                    actual[0].decodedFrames == 1, "Resolution preset produced the wrong decoded frame");
+        }
+    }
+}
+
+void availableHardwareOutputs(const std::filesystem::path& dir, std::ostream& report) {
+    size_t devices = 0, encoded = 0;
+    for (const auto& choice : probeEncoders()) {
+        if (!choice.gpu) continue;
+        ++devices;
+        for (int quality = 0; quality < 5; ++quality) {
+            for (int rate = 0; rate < 3; ++rate) {
+                Config config;
+                config.encoder = choice.name;
+                config.format = "mkv";
+                config.fps = 30;
+                config.quality = quality;
+                config.rateControl = rate;
+                config.bitrateKbps = 8000;
+                VideoEncoder video;
+                try { video.open(config, nullptr, {320, 180}, true); }
+                catch (const std::exception& error) {
+                    report << "UNAVAILABLE " << choice.name << " quality=" << quality
+                           << " rate=" << rate << ": " << error.what() << '\n';
+                    continue;
+                }
+                const auto path = dir / (choice.name + "-" + std::to_string(quality) + "-" + std::to_string(rate) + ".mkv");
+                Muxer mux;
+                mux.open(path, {video.track()});
+                for (int i = 0; i < 6; ++i)
+                    for (auto& packet : video.synthetic(i, i == 0)) mux.write(packet);
+                for (auto& packet : video.flush()) mux.write(packet);
+                mux.close();
+                require(inspect(path, true)[0].decodedFrames == 6,
+                        choice.name + " lost or corrupted a hardware-encoded frame");
+                ++encoded;
             }
         }
     }
+    av_log_set_level(AV_LOG_ERROR);
+    if (!devices) report << "SKIP physical GPU encode/decode: no device encoder available on this runner\n";
+    else if (!encoded) report << "SKIP hardware encode/decode: probed encoders could not open the requested cases\n";
+    else report << "PASS available hardware encode/decode: " << encoded << " supported cases across " << devices << " encoders\n";
 }
 
 void replayDurations(const std::filesystem::path& dir) {
@@ -333,7 +512,7 @@ void replayDurations(const std::filesystem::path& dir) {
         for (auto& p : packets)
             mux.write(p);
         mux.close();
-        auto result = inspect(path);
+        auto result = inspect(path, true);
         require(result.size() == 2, "Replay lost audio");
         require(std::abs(result[0].end - result[1].end) < 100000, "Replay A/V timestamp mismatch");
     }
@@ -348,6 +527,7 @@ int mediaSelfTest() {
         av_log_set_level(AV_LOG_ERROR);
         encoderConfigurationSelfTest();
         report << "PASS AMF H264/HEVC/AV1: all quality/rate modes, bounded overlap, no analysis/preencode, balanced workload, quantizer limits and packet statistics\n";
+        report << "PASS compiled NVENC/QSV/Media Foundation settings and actual libx264/VP9 runtime rate-control modes with automatic/manual bitrates\n";
         platformSelfTest(report);
         {
             Config config;
@@ -421,14 +601,18 @@ int mediaSelfTest() {
             report.flush();
         }
         videoMatrix(dir);
-        report << "PASS 15/30/60 FPS, five quality levels, all three rate controls, native/custom scaling\n";
+        report << "PASS 180 decoded H264/VP9 recordings: 15/30/60 FPS, five presets, three rate modes, automatic/manual bitrate, actual quantizers and native/custom scaling\n";
+        resolutionOutputs(dir);
+        report << "PASS decoded Native/720p/1080p/1440p/4K/Custom outputs from both software encoders\n";
+        availableHardwareOutputs(dir, report);
         replayDurations(dir);
         report << "PASS 15/30/60-second replay rings with accelerated synthetic A/V\n";
         report << "PASS automatic/manual background remux preserves codecs, packets and original; overwrite rejected\n";
+        report << "PASS recording/replay decode from selected Unicode folder, unique names and invalid-folder rejection\n";
         separateTrackRemux(dir);
         report << "PASS independent microphone/desktop tracks survive verified MKV-to-MP4 remux\n";
-        report << "UNVERIFIED hardware capture, WASAPI, real audio synchronization, long-run "
-                  "stability, interactive controls, DPI and gaming performance\n";
+        report << "NOT EXERCISED by this media suite: live hardware capture/WASAPI, long-run "
+                  "stability, physical DPI and gaming performance; UI checks run separately\n";
         return 0;
     } catch (const std::exception& e) {
         report << "FAIL " << e.what() << "\n";
