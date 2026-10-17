@@ -55,3 +55,8 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - Added a GPU chroma filter for native-size NV12 conversion. The supplied frame comparison showed the video processor taking each colour sample from just the top-left RGB pixel, which aliases fine coloured text and can turn green strokes purple.
 - The filter averages vertically and uses a horizontal low-pass filter aligned to the existing LEFT chroma location. It writes only the NV12 colour plane; luma, hardware encoding, bitrate, frame timing and capture routing retain their existing paths. No CPU frame readback or intermediate frame copies are added.
 - Writable NV12 planes are checked on the active device. Unsupported drivers retain video-processor conversion and log the reason. Resized output continues using the existing video processor.
+
+### Ultra H.264 text detail
+
+- Tightened AMD H.264 Ultra VBR's maximum quantizer from 22 to 8 to reduce loss of thin strokes and anti-aliased text, including at startup and after scene changes. Other quality levels, CQP/CBR, and HEVC/AV1 retain their settings.
+- The hardware Balanced preset, colour-sampling correction, capture routing and frame pacing remain in use. Ultra can produce substantially larger files or retain less replay history at the existing memory limit; the bitrate setting remains the VBR target. This is lossy 4:2:0 encoding and does not guarantee pixel-identical desktop text.

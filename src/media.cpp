@@ -202,7 +202,12 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
         constexpr int qp[] = {36, 32, 27, 23, 19};
         c->qmin = 0;
         const int scale = name == "av1_amf" ? 4 : 1;
-        c->qmax = rateControl == 0 ? (qp[std::clamp(cfg.quality, 0, 4)] + 3) * scale
+        // Ultra H.264 must preserve fine desktop strokes from the first frame.
+        // The old ceiling of 22 permitted coarse quantization during VBR startup
+        // and after scene changes. Keep the same hardware preset and rate target.
+        const int maxVbrQp = name == "h264_amf" && cfg.quality == 4
+                                ? 8 : qp[std::clamp(cfg.quality, 0, 4)] + 3;
+        c->qmax = rateControl == 0 ? maxVbrQp * scale
                                   : name == "av1_amf" ? 255 : 51;
         if (rateControl == 1) {
             const int selectedQp = qp[std::clamp(cfg.quality, 0, 4)] * scale;
@@ -257,7 +262,8 @@ void encoderConfigurationSelfTest() {
                 option("async_depth") < 3 || c->max_b_frames || (c->flags & AV_CODEC_FLAG_LOW_DELAY) ||
                 !preset || option("quality") != preset->default_val.i64)
                 throw std::runtime_error("AMF real-time processing or bounded frame overlap regressed");
-            if (c->qmin != 0 || (rate == 0 && c->qmax != (qp[quality] + 3) * scale) ||
+            const int maxVbrQp = std::string(name) == "h264_amf" && quality == 4 ? 8 : qp[quality] + 3;
+            if (c->qmin != 0 || (rate == 0 && c->qmax != maxVbrQp * scale) ||
                 (rate == 1 && (option("qp_i") != qp[quality] * scale || option("qp_p") != qp[quality] * scale)) ||
                 (rate == 2 && c->rc_max_rate != c->bit_rate))
                 throw std::runtime_error("AMF quality/rate-control settings regressed");
