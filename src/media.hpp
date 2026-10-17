@@ -1,6 +1,7 @@
 #pragma once
 #include "capture.hpp"
 #include "config.hpp"
+#include <d3d11_3.h>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -53,8 +54,26 @@ class VideoEncoder {
     Com<ID3D11VideoContext> vc_;
     Com<ID3D11VideoProcessorEnumerator> enumerator_;
     Com<ID3D11VideoProcessor> processor_;
-    struct InputView { ID3D11Texture2D* texture = nullptr; Com<ID3D11VideoProcessorInputView> view; };
-    struct OutputView { ID3D11Texture2D* texture = nullptr; UINT slice = 0; Com<ID3D11VideoProcessorOutputView> view; };
+    struct InputView {
+        ID3D11Texture2D* texture = nullptr;
+        Com<ID3D11VideoProcessorInputView> view;
+        Com<ID3D11ShaderResourceView> colour;
+    };
+    struct OutputView {
+        ID3D11Texture2D* texture = nullptr;
+        UINT slice = 0;
+        Com<ID3D11VideoProcessorOutputView> view;
+        Com<ID3D11RenderTargetView1> chroma;
+    };
+    Com<ID3D11Device3> chromaDevice_;
+    Com<ID3D11DeviceContext1> chromaContext_;
+    Com<ID3D11Multithread> chromaThread_;
+    Com<ID3DDeviceContextState> chromaState_;
+    Com<ID3D11VertexShader> chromaVertex_;
+    Com<ID3D11PixelShader> chromaPixel_;
+    bool chromaLogged_ = false;
+    void initChromaFilter();
+    void filterChroma(InputView& input, OutputView& output);
     std::array<InputView, 2> inputViews_{};
     std::array<OutputView, 8> outputViews_{};
     size_t nextInputView_ = 0, nextOutputView_ = 0;

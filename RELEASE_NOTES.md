@@ -49,3 +49,9 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - Auto capture evaluates encoder-local WGC at startup when display-adapter encoding falls back to hardware frame upload. The retry keeps the successful codec and all image settings, verifies unchanged source dimensions, and requires direct GPU-texture encoding. Unsupported retries restore the compatible display capture path; explicit capture backends are respected. No runtime performance-monitor process or dependency is added.
 
 - Preview and UI animations stop while minimized or recording. Restoring the dashboard requests a fresh preview even for a static source; render-target recreation can restore the last displayed image. Window resizing coalesces render-target changes into paint events. Recording, encoder quality, audio and file finalization are unchanged by these GUI changes.
+
+### Native-size colour sampling
+
+- Added a GPU chroma filter for native-size NV12 conversion. The supplied frame comparison showed the video processor taking each colour sample from just the top-left RGB pixel, which aliases fine coloured text and can turn green strokes purple.
+- The filter averages vertically and uses a horizontal low-pass filter aligned to the existing LEFT chroma location. It writes only the NV12 colour plane; luma, hardware encoding, bitrate, frame timing and capture routing retain their existing paths. No CPU frame readback or intermediate frame copies are added.
+- Writable NV12 planes are checked on the active device. Unsupported drivers retain video-processor conversion and log the reason. Resized output continues using the existing video processor.

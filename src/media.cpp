@@ -6,6 +6,7 @@
 #include <limits>
 #include <utility>
 #include <dxgi1_6.h>
+#include <d3dcompiler.h>
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
@@ -520,6 +521,13 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                         for (auto& stage : uploadStages_) stage.Reset();
                     }
                 }
+                if (processor_ && input_.w == output_.w && input_.h == output_.h) {
+                    try { initChromaFilter(); }
+                    catch (const std::exception& error) {
+                        chromaPixel_.Reset();
+                        Log::get().write(std::string("Filtered GPU chroma unavailable: ") + error.what());
+                    }
+                }
                 selected = name;
                 selectedAdapter = name.find("lib") == 0 ? "CPU" : "library-selected adapter";
                 if (attempt >= 0) {
@@ -628,6 +636,97 @@ void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
                         nullptr};
     sws_scale(sws_, src, lines, 0, input_.h, dest, frame_->linesize);
 }
+// Native-sized VP conversions on some drivers select only the top-left RGB
+// pixel for each chroma block. Filter before decimation so thin coloured text
+// cannot alias to the opposite hue. Leave luma and encoder surfaces untouched.
+void VideoEncoder::initChromaFilter() {
+    static constexpr char shader[] = R"hlsl(
+Texture2D<float4> source : register(t0);
+float4 vertex(uint id : SV_VertexID) : SV_Position {
+    float2 p = float2((id << 1) & 2, id & 2);
+    return float4(p * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float3 rgb(int2 p) {
+    uint w, h;
+    source.GetDimensions(w, h);
+    return source.Load(int3(clamp(p, int2(0, 0), int2(w - 1, h - 1)), 0)).rgb;
+}
+float4 pixel(float4 position : SV_Position) : SV_Target {
+    int2 p = int2(position.xy) * 2;
+    // LEFT chroma siting: horizontal [1/4, 1/2, 1/4], vertical [1/2, 1/2].
+    // Centre at (2*x, 2*y+0.5), matching H.264's existing LEFT metadata.
+    float3 c = (rgb(p + int2(-1, 0)) + rgb(p + int2(-1, 1)) +
+                rgb(p + int2( 1, 0)) + rgb(p + int2( 1, 1))) * 0.125 +
+               (rgb(p) + rgb(p + int2(0, 1))) * 0.25;
+    float2 uv = float2(dot(c, float3(-0.114572106, -0.385427894, 0.5)),
+                      dot(c, float3(0.5, -0.454152908, -0.045847092)));
+    return float4(uv * (224.0 / 255.0) + (128.0 / 255.0), 0, 1);
+}
+)hlsl";
+    check(capture_->device()->QueryInterface(IID_PPV_ARGS(&chromaDevice_)), "Chroma plane device");
+    check(capture_->context()->QueryInterface(IID_PPV_ARGS(&chromaContext_)), "Chroma context state");
+    check(capture_->context()->QueryInterface(IID_PPV_ARGS(&chromaThread_)), "Chroma context lock");
+    const auto level = capture_->device()->GetFeatureLevel();
+    check(chromaDevice_->CreateDeviceContextState(0, &level, 1, D3D11_SDK_VERSION,
+          __uuidof(ID3D11Device), nullptr, &chromaState_), "Chroma isolated state");
+    auto compile = [&](const char* entry, const char* target) {
+        Com<ID3DBlob> code, errors;
+        const HRESULT result = D3DCompile(shader, sizeof(shader) - 1, "NCO chroma filter", nullptr, nullptr,
+            entry, target, D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
+        check(result, "Compile chroma shader");
+        return code;
+    };
+    auto vertex = compile("vertex", "vs_4_0");
+    auto pixel = compile("pixel", "ps_4_0");
+    check(chromaDevice_->CreateVertexShader(vertex->GetBufferPointer(), vertex->GetBufferSize(), nullptr,
+                                          &chromaVertex_), "Chroma vertex shader");
+    check(chromaDevice_->CreatePixelShader(pixel->GetBufferPointer(), pixel->GetBufferSize(), nullptr,
+                                         &chromaPixel_), "Chroma pixel shader");
+}
+void VideoEncoder::filterChroma(InputView& input, OutputView& output) {
+    if (!input.colour)
+        check(chromaDevice_->CreateShaderResourceView(input.texture, nullptr, &input.colour), "Chroma RGB view");
+    if (!output.chroma) {
+        D3D11_TEXTURE2D_DESC texture{};
+        output.texture->GetDesc(&texture);
+        D3D11_RENDER_TARGET_VIEW_DESC1 view{};
+        view.Format = DXGI_FORMAT_R8G8_UNORM;
+        if (texture.ArraySize > 1) {
+            view.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+            view.Texture2DArray.FirstArraySlice = output.slice;
+            view.Texture2DArray.ArraySize = 1;
+            view.Texture2DArray.PlaneSlice = 1;
+        } else {
+            view.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            view.Texture2D.PlaneSlice = 1;
+        }
+        check(chromaDevice_->CreateRenderTargetView1(output.texture, &view, &output.chroma), "NV12 chroma target");
+    }
+    D3D11_VIEWPORT viewport{0, 0, float(output_.w / 2), float(output_.h / 2), 0, 1};
+    ID3D11RenderTargetView* target = output.chroma.Get();
+    ID3D11ShaderResourceView* colour = input.colour.Get();
+    Com<ID3DDeviceContextState> previous;
+    // The capture cursor also uses D2D on this device. Swap/restore all graphics
+    // state under one lock so neither renderer can disturb the other's state.
+    chromaThread_->Enter();
+    chromaContext_->SwapDeviceContextState(chromaState_.Get(), &previous);
+    chromaContext_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    chromaContext_->VSSetShader(chromaVertex_.Get(), nullptr, 0);
+    chromaContext_->PSSetShader(chromaPixel_.Get(), nullptr, 0);
+    chromaContext_->RSSetViewports(1, &viewport);
+    chromaContext_->OMSetRenderTargets(1, &target, nullptr);
+    chromaContext_->PSSetShaderResources(0, 1, &colour);
+    chromaContext_->Draw(3, 0);
+    colour = nullptr;
+    chromaContext_->PSSetShaderResources(0, 1, &colour);
+    chromaContext_->OMSetRenderTargets(0, nullptr, nullptr);
+    chromaContext_->SwapDeviceContextState(previous.Get(), nullptr);
+    chromaThread_->Leave();
+    if (!chromaLogged_) {
+        Log::get().write("Chroma sampling: filtered BT.709 LEFT on GPU (native size, luma preserved)");
+        chromaLogged_ = true;
+    }
+}
 void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice) {
     auto input = std::find_if(inputViews_.begin(), inputViews_.end(),
                               [&](const auto& v) { return v.texture == t; });
@@ -662,6 +761,14 @@ void VideoEncoder::convert(ID3D11Texture2D* t, ID3D11Texture2D* out, UINT slice)
     stream.pInputSurface = input->view.Get();
     check(vc_->VideoProcessorBlt(processor_.Get(), output->view.Get(), 0, 1, &stream),
           "GPU scale and NV12 conversion");
+    if (chromaPixel_) {
+        try { filterChroma(*input, *output); }
+        catch (const std::exception& error) {
+            // A driver without writable NV12 planes retains its existing path.
+            chromaPixel_.Reset();
+            Log::get().write(std::string("Filtered GPU chroma unavailable: ") + error.what());
+        }
+    }
 }
 bool VideoEncoder::drainReadback(std::vector<Packet>& output) {
     int index = -1;
