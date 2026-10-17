@@ -799,6 +799,9 @@ std::vector<Packet> VideoEncoder::flush() {
             Sleep(1);
         }
     }
+    // A start cancelled before its first frame has no delayed video to drain.
+    // Some hardware drivers do not complete an empty encoder drain.
+    if (!submittedFrames) return output;
     auto tail = send(nullptr);
     output.insert(output.end(), std::make_move_iterator(tail.begin()), std::make_move_iterator(tail.end()));
     return output;

@@ -172,6 +172,7 @@ void Engine::run(std::stop_token token) {
             Log::get().write("Pipeline finalized frames=" + std::to_string(local.frames) +
                              " dropped=" + std::to_string(local.dropped));
         if (finalizeRecording) {
+            const bool cancelledBeforeOutput = !recordingOutputOpen;
             // Hardware teardown can be slow even after all packets drained.
             // Finalize the container and clear the stop state before releasing
             // driver objects so the recording file is not held open by cleanup.
@@ -179,8 +180,14 @@ void Engine::run(std::stop_token token) {
             recording = paused = stoppingRecording = false;
             local.ready = local.recording = local.paused = local.finishing = local.starting = false;
             local.durationUs = 0;
-            std::lock_guard lock(mutex_);
-            stats_ = local;
+            {
+                std::lock_guard lock(mutex_);
+                stats_ = local;
+            }
+            if (cancelledBeforeOutput) {
+                Log::get().write("Recording stopped before a decodable video frame; no file created");
+                notify_("Recording stopped", false);
+            }
         }
         video.reset();
         drainingVideo = false;
@@ -705,6 +712,7 @@ void Engine::run(std::stop_token token) {
             }
             if (stoppingRecording && recording) {
                 const bool fenceReached =
+                    !recordingOutputOpen ||
                     (latestVideoUs >= stopCutoff &&
                      audioPts * 1000000 / 48000 + int64_t(cfg.audioOffsetMs) * 1000 >= stopCutoff) ||
                     clockUs() - stopRequested >= 2000000;
