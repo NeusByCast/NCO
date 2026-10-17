@@ -145,18 +145,6 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     c->colorspace = AVCOL_SPC_BT709;
     c->color_primaries = AVCOL_PRI_BT709;
     c->color_trc = AVCOL_TRC_BT709;
-    if (name == "libx264rgb") {
-        // Preserve desktop RGB samples. This is an explicit CPU mode, never an
-        // automatic hardware fallback. Bitrate constraints would defeat lossless.
-        c->bit_rate = c->rc_max_rate = c->rc_buffer_size = 0;
-        c->color_range = AVCOL_RANGE_JPEG;
-        c->colorspace = AVCOL_SPC_RGB;
-        avcheck(av_opt_set(c->priv_data, "preset", "ultrafast", 0), "RGB encoder preset");
-        avcheck(av_opt_set(c->priv_data, "tune", "zerolatency", 0), "RGB encoder latency");
-        avcheck(av_opt_set(c->priv_data, "profile", "high444", 0), "RGB encoder profile");
-        avcheck(av_opt_set_int(c->priv_data, "crf", 0, 0), "RGB lossless compression");
-        c->thread_count = std::clamp(int(std::thread::hardware_concurrency() / 2), 1, 8);
-    }
     if (name == "libx264") {
         av_opt_set(c->priv_data, "preset", "ultrafast", 0);
         av_opt_set(c->priv_data, "tune", "zerolatency", 0);
@@ -302,7 +290,6 @@ std::vector<EncoderChoice> probeEncoders() {
                                   {"h264_mf", L"Windows GPU · H.264", true},
                                   {"hevc_mf", L"Windows GPU · HEVC", true},
                                   {"libx264", L"CPU · H.264", false},
-                                  {"libx264rgb", L"CPU · Full-colour RGB (lossless)", false},
                                   {"libvpx-vp9", L"Software · VP9 (WebM)", false}};
     Config cfg;
     cfg.fps = 30;
@@ -324,8 +311,7 @@ std::vector<EncoderChoice> probeEncoders() {
             bool supported = false;
             try {
                 configureVideo(c, item.name, cfg, {640, 360},
-                               item.name == "libx264rgb" ? AV_PIX_FMT_BGR0
-                               : item.gpu ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P);
+                               item.gpu ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P);
                 if (index >= 0)
                     c->hw_device_ctx = adapterDevice(index);
                 avcheck(avcodec_open2(c, codec, nullptr), "Probe encoder");
@@ -408,7 +394,6 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 gpu_ = attempt == -2;
                 AVPixelFormat fmt =
                     gpu_ ? AV_PIX_FMT_D3D11
-                         : name == "libx264rgb" ? AV_PIX_FMT_BGR0
                          : (name.find("lib") == 0 ? AV_PIX_FMT_YUV420P : AV_PIX_FMT_NV12);
                 configureVideo(codec_, name, cfg, output_, fmt);
                 if (gpu_) {
@@ -502,23 +487,17 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                 frame_->format = fmt;
                 frame_->width = output_.w;
                 frame_->height = output_.h;
-                frame_->color_range = codec_->color_range;
-                frame_->colorspace = codec_->colorspace;
+                frame_->color_range = AVCOL_RANGE_MPEG;
+                frame_->colorspace = AVCOL_SPC_BT709;
                 if (!gpu_) {
                     avcheck(av_frame_get_buffer(frame_, 32), "Video frame buffer");
-                    // Native RGB frames can be copied directly, without scaling
-                    // or any RGB/YUV colour conversion.
-                    if (fmt != AV_PIX_FMT_BGR0 || input.w != viewport_.w || input.h != viewport_.h) {
-                        const int scaling = fmt == AV_PIX_FMT_BGR0 ? SWS_BICUBIC | SWS_ACCURATE_RND
-                                                                  : SWS_FAST_BILINEAR;
-                        sws_ = sws_getContext(input.w, input.h, AV_PIX_FMT_BGRA, viewport_.w, viewport_.h,
-                                              fmt, scaling, nullptr, nullptr, nullptr);
-                        if (!sws_)
-                            throw std::runtime_error("CPU color converter unavailable");
-                        const int* coeff = sws_getCoefficients(SWS_CS_ITU709);
-                        sws_setColorspaceDetails(sws_, coeff, 1, coeff, fmt == AV_PIX_FMT_BGR0 ? 1 : 0,
-                                                 0, 1 << 16, 1 << 16);
-                    }
+                    sws_ =
+                        sws_getContext(input.w, input.h, AV_PIX_FMT_BGRA, viewport_.w, viewport_.h,
+                                       fmt, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+                    if (!sws_)
+                        throw std::runtime_error("CPU color converter unavailable");
+                    const int* coeff = sws_getCoefficients(SWS_CS_ITU709);
+                    sws_setColorspaceDetails(sws_, coeff, 1, coeff, 0, 0, 1 << 16, 1 << 16);
                 }
                 nv12Readback_ = !gpu_ && capture && fmt == AV_PIX_FMT_NV12 && processor_;
 
@@ -570,19 +549,16 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                     " bitrate_bps=" + std::to_string(codec_->bit_rate) +
                     " quality=" + std::to_string(cfg.quality) + " container=" + cfg.format +
                     " GPU_NV12_readback=" + std::to_string(nv12Readback_));
-                const char* preset = name == "libx264rgb" ? "ultrafast/zerolatency"
-                                     : name.find("amf") != std::string::npos
+                const char* preset = name.find("amf") != std::string::npos
                                          ? cfg.quality == 0 ? "speed" : "balanced"
                                      : name.find("nvenc") != std::string::npos
                                          ? cfg.quality >= 3 ? "p5/hq" : cfg.quality >= 1 ? "p4" : "p3/ull"
                                      : name.find("qsv") != std::string::npos ? "veryfast"
                                                                               : "codec-default";
-                const char* rateMode = name == "libx264rgb" ? "lossless RGB (CRF 0)"
-                                     : cfg.rateControl == 1 ? "CQP"
+                const char* rateMode = cfg.rateControl == 1 ? "CQP"
                                      : cfg.rateControl == 2 ? "CBR"
                                                             : "VBR peak constrained";
-                const char* bitrateRole = name == "libx264rgb" ? "ignored_by_lossless"
-                                       : cfg.rateControl == 1 ? "ignored_by_CQP" : "target";
+                const char* bitrateRole = cfg.rateControl == 1 ? "ignored_by_CQP" : "target";
                 Log::get().write("Encoder quality mode=" + std::string(preset) +
                                  " rate_control=" + rateMode +
                                  " bitrate_role=" + bitrateRole +
@@ -593,7 +569,6 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
                                  " preencode=disabled lookahead=disabled video_auto_processing=disabled" +
                                  " pixel_format=" +
                                  (fmt == AV_PIX_FMT_D3D11 ? "d3d11/nv12"
-                                  : fmt == AV_PIX_FMT_BGR0 ? "bgr0/RGB/full-range/4:4:4"
                                   : fmt == AV_PIX_FMT_NV12 ? "nv12/4:2:0"
                                                            : "yuv420p/4:2:0"));
                 Log::get().write("Encoder: " + name +
@@ -655,22 +630,6 @@ void VideoEncoder::prepareCpu(const uint8_t* b, int stride) {
     avcheck(av_frame_make_writable(frame_), "Writable video frame");
     const uint8_t* src[] = {b};
     int lines[] = {stride};
-    if (frame_->format == AV_PIX_FMT_BGR0) {
-        if (viewport_.w != output_.w || viewport_.h != output_.h) {
-            for (int y = 0; y < output_.h; ++y)
-                memset(frame_->data[0] + size_t(y) * frame_->linesize[0], 0, size_t(output_.w) * 4);
-        }
-        auto destination = frame_->data[0] + size_t(viewport_.y) * frame_->linesize[0] + viewport_.x * 4;
-        if (input_.w == viewport_.w && input_.h == viewport_.h) {
-            for (int y = 0; y < input_.h; ++y)
-                memcpy(destination + size_t(y) * frame_->linesize[0], b + size_t(y) * stride,
-                       size_t(input_.w) * 4);
-        } else {
-            uint8_t* dest[4] = {destination};
-            sws_scale(sws_, src, lines, 0, input_.h, dest, frame_->linesize);
-        }
-        return;
-    }
     if (viewport_.w != output_.w || viewport_.h != output_.h) {
         ptrdiff_t strides[4] = {frame_->linesize[0], frame_->linesize[1], frame_->linesize[2], 0};
         avcheck(av_image_fill_black(frame_->data, strides, AVPixelFormat(frame_->format),
