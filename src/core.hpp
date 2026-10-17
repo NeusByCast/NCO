@@ -20,6 +20,9 @@ struct FitRect {
 inline int64_t frameDeadlineUs(int64_t epoch, int64_t index, int fps) {
     return epoch + (index * 1000000 + fps - 1) / fps;
 }
+inline bool recordingStopComplete(bool replay, bool draining, bool encoderFinished, bool fenceReached) {
+    return draining ? encoderFinished : replay && fenceReached;
+}
 inline FitRect letterbox(Size source, Size output) {
     const double scale = std::min(double(output.w) / source.w, double(output.h) / source.h);
     const int w = std::max(2, int(source.w * scale) & ~1);

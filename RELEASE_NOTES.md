@@ -67,3 +67,8 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - AMF processing-preset, rate-control and fixed-quantizer option errors now fail initialization so a rejected request cannot silently continue with codec defaults.
 - Recording settings explain automatic bitrate (0), VBR targets and CBR's bitrate constraint. The bitrate field is disabled in CQP, where it is ignored; its saved value is retained for the other modes.
 - This corrects confirmed settings inconsistencies. The remaining thin-text complaint still needs runtime confirmation; no capture, colour-filter, frame-queue or GPU-routing change is included.
+
+### Replay enabled during recording finalization
+
+- Enabling replay after an encoder drain has started now waits for the drain to complete, releases the finished worker, and starts a new replay pipeline. Previously the replay flag could close the recording early and retain an encoder that no longer accepted frames.
+- Added a focused stop-decision check for replay changes during a drain. Physical GPU capture, folder-picker permissions and every fallback encoder's rate-control behavior are not certified by the existing synthetic recording checks.

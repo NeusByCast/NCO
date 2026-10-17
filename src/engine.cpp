@@ -728,8 +728,11 @@ void Engine::run(std::stop_token token) {
                 }
                 if (drainingVideo && !video->finished() && clockUs() - drainRequested >= 12000000)
                     throw std::runtime_error("Encoder shutdown timed out. Completed packets were saved; restart NCO if the graphics driver remains unresponsive");
-                if ((replay && fenceReached) || (drainingVideo && video->finished())) {
-                    if (!replay) endPipeline(true);
+                if (recordingStopComplete(replay, drainingVideo,
+                                          drainingVideo && video->finished(), fenceReached)) {
+                    // A drain requested before replay was enabled cannot be
+                    // cancelled. Recreate that worker for replay on the next loop.
+                    if (drainingVideo) endPipeline(true);
                     else closeRecordingOutput();
                     recording = paused = stoppingRecording = false;
                     local.durationUs = 0;

@@ -21,6 +21,13 @@ struct P {
 };
 int main() {
     using namespace nco;
+    // Enabling replay after a drain request must still wait for that worker.
+    CHECK(!recordingStopComplete(true, true, false, true));
+    CHECK(recordingStopComplete(true, true, true, false));
+    CHECK(!recordingStopComplete(false, true, false, true));
+    CHECK(recordingStopComplete(false, true, true, true));
+    CHECK(recordingStopComplete(true, false, false, true));
+    CHECK(!recordingStopComplete(true, false, false, false));
     for (int fps : {15, 30, 60}) {
         constexpr int64_t epoch = 1234567;
         int64_t previous = epoch - 1;
