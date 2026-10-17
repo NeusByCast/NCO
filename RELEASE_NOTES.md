@@ -60,3 +60,10 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 
 - Tightened AMD H.264 Ultra VBR's maximum quantizer from 22 to 8 to reduce loss of thin strokes and anti-aliased text, including at startup and after scene changes. Other quality levels, CQP/CBR, and HEVC/AV1 retain their settings.
 - The hardware Balanced preset, colour-sampling correction, capture routing and frame pacing remain in use. Ultra can produce substantially larger files or retain less replay history at the existing memory limit; the bitrate setting remains the VBR target. This is lossy 4:2:0 encoding and does not guarantee pixel-identical desktop text.
+
+### Recording quality settings
+
+- AMD H.264 Ultra CQP now requests QP 8, matching Ultra VBR's existing maximum QP of 8, instead of weakening to QP 19 when switching modes. This can increase CQP file sizes and reduce replay history at the existing memory cap. Other presets, codecs, VBR and CBR retain their encoding settings.
+- AMF processing-preset, rate-control and fixed-quantizer option errors now fail initialization so a rejected request cannot silently continue with codec defaults.
+- Recording settings explain automatic bitrate (0), VBR targets and CBR's bitrate constraint. The bitrate field is disabled in CQP, where it is ignored; its saved value is retained for the other modes.
+- This corrects confirmed settings inconsistencies. The remaining thin-text complaint still needs runtime confirmation; no capture, colour-filter, frame-queue or GPU-routing change is included.

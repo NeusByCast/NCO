@@ -780,8 +780,9 @@ void UI::settings() {
             },
             !locked);
         num(
-            L"bitrate", L"Bitrate · kbps", cfg_.bitrateKbps, 0, 150000,
-            [this](int n) { cfg_.bitrateKbps = n; }, !locked);
+            L"bitrate", cfg_.rateControl == 1 ? L"Bitrate · not used in CQP" : L"Bitrate · kbps (0 = automatic)",
+            cfg_.bitrateKbps, 0, 150000,
+            [this](int n) { cfg_.bitrateKbps = n; }, !locked && cfg_.rateControl != 1);
         const std::vector<std::wstring> rateModes = {
             L"VBR · peak constrained", L"CQP · constant quality", L"CBR · constant bitrate"};
         pick(
@@ -792,6 +793,13 @@ void UI::settings() {
                 save();
             },
             !locked);
+        const wchar_t* rateHint = cfg_.rateControl == 1
+            ? L"CQP uses the quality preset. Bitrate is ignored and file size varies."
+            : cfg_.rateControl == 2
+                ? L"CBR prioritizes bitrate. A low bitrate can reduce detail even on Ultra."
+                : L"VBR uses the bitrate target. Set 0 to choose bitrate from quality, resolution and FPS.";
+        text(rateHint, {206, y, w_ - 28, y + 32}, 11, muted);
+        y += 40;
         std::vector<std::wstring> labels = {L"Auto · best compatible encoder"};
         std::vector<std::string> names = {"auto"};
         int selected = 0;
