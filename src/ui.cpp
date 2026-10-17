@@ -745,6 +745,7 @@ void UI::settings() {
         y += 68;
     };
     if (page_ == 1) {
+        const bool fullColour = cfg_.encoder == "libx264rgb";
         pick(
             L"fps", L"Frame rate", std::to_wstring(cfg_.fps) + L" FPS",
             {L"15 FPS", L"30 FPS", L"60 FPS"},
@@ -773,25 +774,26 @@ void UI::settings() {
         }
         std::vector<std::wstring> q = {L"Low", L"Medium", L"High", L"Very High", L"Ultra"};
         pick(
-            L"quality", L"Quality preset", q[cfg_.quality], q, cfg_.quality,
+            L"quality", L"Quality preset", fullColour ? L"Lossless RGB" : q[cfg_.quality], q, cfg_.quality,
             [this](int i) {
                 cfg_.quality = i;
                 save();
             },
-            !locked);
+            !locked && !fullColour);
         num(
-            L"bitrate", L"Bitrate · kbps", cfg_.bitrateKbps, 0, 150000,
-            [this](int n) { cfg_.bitrateKbps = n; }, !locked);
+            L"bitrate", fullColour ? L"Bitrate · unused in lossless RGB" : L"Bitrate · kbps",
+            cfg_.bitrateKbps, 0, 150000,
+            [this](int n) { cfg_.bitrateKbps = n; }, !locked && !fullColour);
         const std::vector<std::wstring> rateModes = {
             L"VBR · peak constrained", L"CQP · constant quality", L"CBR · constant bitrate"};
         pick(
-            L"ratecontrol", L"Rate control", rateModes[size_t(cfg_.rateControl)], rateModes,
+            L"ratecontrol", L"Rate control", fullColour ? L"Lossless · full colour" : rateModes[size_t(cfg_.rateControl)], rateModes,
             cfg_.rateControl,
             [this](int i) {
                 cfg_.rateControl = i;
                 save();
             },
-            !locked);
+            !locked && !fullColour);
         std::vector<std::wstring> labels = {L"Auto · best compatible encoder"};
         std::vector<std::string> names = {"auto"};
         int selected = 0;
@@ -810,6 +812,11 @@ void UI::settings() {
                 save();
             },
             !locked && !probing_);
+        if (fullColour) {
+            text(L"Full-colour RGB uses more CPU and disk space. Native resolution preserves text detail.",
+                 {222, y, w_ - 42, y + 44}, 12, muted);
+            y += 48;
+        }
         std::vector<std::wstring> formats = {L"MP4", L"MKV", L"MOV", L"WebM · AV1 / VP9"};
         std::vector<std::string> ids = {"mp4", "mkv", "mov", "webm"};
         int fi = int(std::find(ids.begin(), ids.end(), cfg_.format) - ids.begin());

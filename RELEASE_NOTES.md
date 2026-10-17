@@ -55,3 +55,9 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - Diagnostics can save matching capture, GPU-converted NV12, and software-decoded encoded frames to a local comparison folder. Run while recording or replay is active; the capture occurs after three seconds.
 - The probe allocates readback surfaces and writes images only when explicitly requested. It does not change normal colour conversion, encoder quality, capture routing, or synchronization. A comparison may briefly hitch because it reads GPU data and forces one keyframe.
 - Screen images remain local. This diagnostic locates artifacts; it is not itself a recording-quality fix.
+
+### Full-colour software recording
+
+- Added an explicit “CPU · Full-colour RGB (lossless)” encoder for recordings and replay. It uses H.264 RGB 4:4:4 with lossless compression, bypassing NV12 and colour subsampling. Native-size frames are copied without colour conversion; selected resizing still changes pixels.
+- Lossless RGB uses more CPU, disk space, and replay memory than the hardware modes. Quality, bitrate and rate-control overrides are disabled for this mode; their saved values remain available when switching back. The existing replay memory limit remains in effect, so high-motion lossless content can retain a shorter replay.
+- Select MP4, MKV or MOV and the new encoder in Recording settings. Playback requires a player supporting H.264 RGB/4:4:4, such as VLC with software decoding. Auto continues selecting the existing hardware path.
