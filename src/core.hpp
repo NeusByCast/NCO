@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -97,12 +98,16 @@ template <class T> class ReplayRing {
     void push(T p) {
         bytes_ += p.bytes();
         // Encoded video may arrive after newer audio on the asynchronous path.
-        auto position = std::upper_bound(packets_.begin(), packets_.end(), p,
-            [](const T& left, const T& right) {
-                if (left.us() != right.us()) return left.us() < right.us();
-                return left.key() && !right.key();
-            });
-        packets_.insert(position, std::move(p));
+        const auto before = [](const T& left, const T& right) {
+            if (left.us() != right.us()) return left.us() < right.us();
+            return left.key() && !right.key();
+        };
+        if (packets_.empty() || !before(p, packets_.back()))
+            packets_.push_back(std::move(p));
+        else {
+            auto position = std::upper_bound(packets_.begin(), packets_.end(), p, before);
+            packets_.insert(position, std::move(p));
+        }
         const int64_t cutoff = packets_.back().us() - int64_t(seconds) * 1000000;
         while (packets_.size() > 1) {
             auto next = std::find_if(std::next(packets_.begin()), packets_.end(),
@@ -111,11 +116,12 @@ template <class T> class ReplayRing {
                 break;
             if (next->us() > cutoff && bytes_ <= cap)
                 break;
-            while (packets_.begin() != next) {
+            // Count once: deque pops invalidate iterators, and searching again
+            // after every pop makes discarding a GOP quadratic in its size.
+            auto remaining = std::distance(packets_.begin(), next);
+            while (remaining-- > 0) {
                 bytes_ -= packets_.front().bytes();
                 packets_.pop_front();
-                next = std::find_if(packets_.begin(), packets_.end(),
-                                    [](const T& v) { return v.key(); });
             }
         }
         if (bytes_ > cap)

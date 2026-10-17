@@ -134,7 +134,7 @@ void Engine::run(std::stop_token token) {
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
     bool suspended = false, stoppingRecording = false, drainingVideo = false, previewDirty = true, previewWasVisible = false;
     int64_t stopCutoff = 0, stopRequested = 0, drainRequested = 0, latestVideoUs = -1;
-    int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0;
+    int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0, nextReplayKeyframe = 0;
     EngineStats local;
     std::filesystem::path recordingPath;
     bool recordingOutputOpen = false;
@@ -274,6 +274,7 @@ void Engine::run(std::stop_token token) {
         epoch = clockUs();
         nextVideo = epoch;
         nextFrame = 0;
+        nextReplayKeyframe = 0;
         audioPts = 0;
         ring.clear();
         configureAudio(cfg, true);
@@ -440,6 +441,7 @@ void Engine::run(std::stop_token token) {
                     local.ready = true;
                 }
                 if (video) configureAudio(current, false);
+                if (current.replay && !cfg.replay) nextReplayKeyframe = 0;
                 cfg = current;
                 gen = newGen;
                 ring.seconds = cfg.replaySeconds;
@@ -567,13 +569,14 @@ void Engine::run(std::stop_token token) {
                     if (frameIndex > nextFrame)
                         local.dropped += uint64_t(frameIndex - nextFrame);
                     nextFrame = frameIndex + 1;
-                    // Keep replay independently decodable with a one-second GOP.
-                    // Some hardware encoders otherwise ignore the configured GOP
-                    // interval when replay is the only consumer of the packets.
-                    const bool replayKey = replay && frameIndex % cfg.fps == 0;
-                    if (video->submit(texture.Get(), frameIndex, forceKey || replayKey))
+                    // Match the encoder's two-second GOP instead of forcing
+                    // twice as many expensive IDRs while replay runs continuously.
+                    // A deadline also survives dropped frames at the boundary.
+                    const bool replayKey = replay && frameIndex >= nextReplayKeyframe;
+                    if (video->submit(texture.Get(), frameIndex, forceKey || replayKey)) {
                         forceKey = false;
-                    else
+                        if (replayKey) nextReplayKeyframe = frameIndex + int64_t(cfg.fps) * 2;
+                    } else
                         ++local.dropped;
                     nextVideo = frameDeadlineUs(epoch, frameIndex + 1, cfg.fps);
                 }

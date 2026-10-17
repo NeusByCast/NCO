@@ -1,5 +1,7 @@
 # NCO 0.4
 
+- Replay requests keyframes at the encoder's normal two-second interval, with retries when a boundary frame cannot be submitted, instead of forcing an IDR every second. Replay clips remain keyframe-aligned and can include up to one GOP of extra history. Buffer insertion appends ordered packets directly; GOP eviction removes a counted prefix without repeatedly scanning it. Resolution, frame rate, bitrate, quantizer limits and capture routing are unchanged. Hardware stutter still requires confirmation on the affected PC.
+
 - Moving/resizing the app pauses preview acquisition and UI animations, retains the last image, and resumes preview on release. The native move loop no longer drives preview repaint timers. Record requests show one immediate Starting popup; output-file readiness refreshes the dashboard without a second popup. Notifications read current engine status and present their first frame immediately.
 
 - Opening the capture-source selector discovers current windows, preserving the selected display/window/region without periodic scanning or audio-device enumeration. Minimized windows remain listed and ask to be restored before selection. Browser windows show their active tab title; tabs within one browser window are not separate window-capture sources. Recording and preview rendering are unchanged.
