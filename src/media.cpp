@@ -8,7 +8,6 @@
 #include <utility>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
-#include <codecapi.h>
 extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
@@ -226,10 +225,8 @@ static void configureVideo(AVCodecContext* c, const std::string& name, const Con
     if (name.find("_mf") != std::string::npos) {
         avcheck(av_opt_set_int(c->priv_data, "hw_encoding", 1, 0), "Windows hardware encoding");
         avcheck(av_opt_set(c->priv_data, "scenario", "display_remoting", 0), "Windows capture scenario");
-        const int mode = rateControl == 1 ? eAVEncCommonRateControlMode_CQP
-                       : rateControl == 2 ? eAVEncCommonRateControlMode_CBR
-                                          : eAVEncCommonRateControlMode_PeakConstrainedVBR;
-        avcheck(av_opt_set_int(c->priv_data, "rate_control", mode, 0), "Windows rate control");
+        const char* mode = rateControl == 1 ? "quality" : rateControl == 2 ? "cbr" : "pc_vbr";
+        avcheck(av_opt_set(c->priv_data, "rate_control", mode, 0), "Windows rate control");
         if (rateControl == 1) {
             constexpr int qp[] = {36, 32, 27, 23, 19};
             // Media Foundation consumes the raw QP, not FF_QP2LAMBDA units.
@@ -354,8 +351,7 @@ void encoderConfigurationSelfTest() {
                         if (rate == 1) require(option("qp") == qp[quality]);
                         if (rate == 0) require(option("qmax") == (qp[quality] + 3) * (encoder == "av1_nvenc" ? 4 : 1));
                     } else if (encoder.find("_mf") != std::string::npos) {
-                        require(option("rate_control") == (rate == 1 ? eAVEncCommonRateControlMode_CQP
-                            : rate == 2 ? eAVEncCommonRateControlMode_CBR : eAVEncCommonRateControlMode_PeakConstrainedVBR));
+                        require(option("rate_control") == namedOption(rate == 1 ? "quality" : rate == 2 ? "cbr" : "pc_vbr", "rate_control"));
                         require(option("hw_encoding") == 1);
                         if (rate == 1) require(c->global_quality == qp[quality]);
                     } else if (encoder.find("qsv") != std::string::npos) {

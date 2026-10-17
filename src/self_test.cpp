@@ -239,7 +239,7 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
         {
             const auto folder = dir / L"Selected folder \u03a9 with spaces";
             const auto recording = uniquePath(folder, "NCO_", "mkv");
-            const auto replay = uniquePath(folder, "Replay_", "mkv");
+            const auto replayOutput = uniquePath(folder, "Replay_", "mkv");
             const auto another = uniquePath(folder, "NCO_", "mkv");
             require(recording != another, "Output folder generated duplicate names");
             std::vector<std::string> folderErrors;
@@ -250,10 +250,10 @@ void containerTest(const std::filesystem::path& dir, const std::string& format) 
                 writer.open(recording, tracks, false, "mkv");
                 for (auto& packet : packets) writer.write(packet, 0);
                 writer.close();
-                writer.replay(replay, tracks, ring.snapshot());
+                writer.replay(replayOutput, tracks, ring.snapshot());
             }
             require(folderErrors.empty() && inspect(recording, true)[0].decodedFrames == 90 &&
-                    inspect(replay, true)[0].decodedFrames > 0,
+                    inspect(replayOutput, true)[0].decodedFrames > 0,
                     "Recording or replay failed in the selected Unicode output folder");
             const auto blocked = folder / "regular-file";
             { std::ofstream sentinel(blocked); sentinel << "preserve"; }

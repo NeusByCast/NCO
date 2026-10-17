@@ -37,7 +37,7 @@
                      break;
 --- a/libavcodec/mfenc.c
 +++ b/libavcodec/mfenc.c
-@@ -838,12 +838,34 @@
+@@ -838,12 +838,23 @@
      IMFAttributes_SetUINT32(type, &MF_MT_AVG_BITRATE, avctx->bit_rate);
  
      // Note that some of the ICodecAPI options must be set before SetOutputType.
@@ -54,27 +54,16 @@
 +        if (c->opt_enc_rc >= 0) {
 +            HRESULT status = ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonRateControlMode,
 +                                               FF_VAL_VT_UI4(c->opt_enc_rc));
-+            VARIANT actual = {0};
 +            if (FAILED(status)) {
 +                av_log(avctx, AV_LOG_ERROR, "Requested rate control mode %d was rejected: %s\n",
 +                       c->opt_enc_rc, ff_hr_str(status));
 +                return AVERROR_EXTERNAL;
 +            }
-+            status = ICodecAPI_GetValue(c->codec_api, &ff_CODECAPI_AVEncCommonRateControlMode, &actual);
-+            if (SUCCEEDED(status)) {
-+                status = VariantChangeType(&actual, &actual, 0, VT_UI4);
-+                if (FAILED(status) || actual.ulVal != c->opt_enc_rc) {
-+                    VariantClear(&actual);
-+                    av_log(avctx, AV_LOG_ERROR, "Encoder did not retain the requested rate control mode\n");
-+                    return AVERROR_EXTERNAL;
-+                }
-+            }
-+            VariantClear(&actual);
 +        }
  
          if (c->opt_enc_quality >= 0)
              ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonQuality, FF_VAL_VT_UI4(c->opt_enc_quality));
-@@ -860,8 +882,18 @@
+@@ -860,8 +871,18 @@
          if(avctx->compression_level >= 0)
              ICodecAPI_SetValue(c->codec_api, &ff_CODECAPI_AVEncCommonQualityVsSpeed, FF_VAL_VT_UI4(avctx->compression_level));
  
@@ -95,3 +84,23 @@
  
          // Always set the number of b-frames. Qualcomm's HEVC encoder on SD835
          // defaults this to 1, and that setting is buggy with many of the
+@@ -1006,6 +1027,19 @@
+         hr = IMFTransform_SetOutputType(c->mft, c->out_stream_id, out_type, 0);
+         if (!FAILED(hr)) {
+             ret = 1;
++            /* Static encoder settings take effect when the media type is set. */
++            if (c->is_video && c->codec_api && c->opt_enc_rc >= 0) {
++                VARIANT actual = {0};
++                HRESULT status = ICodecAPI_GetValue(c->codec_api, &ff_CODECAPI_AVEncCommonRateControlMode, &actual);
++                if (SUCCEEDED(status)) {
++                    status = VariantChangeType(&actual, &actual, 0, VT_UI4);
++                    if (FAILED(status) || actual.ulVal != (ULONG)c->opt_enc_rc) {
++                        av_log(avctx, AV_LOG_ERROR, "Encoder did not retain the requested rate control mode\n");
++                        ret = AVERROR_EXTERNAL;
++                    }
++                }
++                VariantClear(&actual);
++            }
+         } else if (hr == MF_E_TRANSFORM_TYPE_NOT_SET) {
+             av_log(avctx, AV_LOG_VERBOSE, "rejected - need to set input type\n");
+             ret = 0;
