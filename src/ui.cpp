@@ -209,8 +209,9 @@ void UI::updatePreviewTimer() {
         popup_.start = 0;
         KillTimer(hwnd_, 2);
         if (toastVisible_ && !animated) {
+            toastSlideIn_ = false;
             toastSurface_.frame(toast_, toastPosition_.x, toastPosition_.y, 255);
-            ShowWindow(toast_, SW_SHOWNOACTIVATE);
+            raiseToast();
             SetTimer(hwnd_, 2, UINT(std::max<int64_t>(1, (toastStart_ + 1000000 - clockUs()) / 1000)), nullptr);
         }
     }
@@ -239,11 +240,11 @@ void UI::advanceUiFrame() {
             toastVisible_ = false;
             KillTimer(hwnd_, 2);
         } else if (animationsEnabled()) {
-            const float fraction = elapsed < 150 ? ease(elapsed / 150)
-                : elapsed > 850 ? 1 - ease((elapsed - 850) / 150) : 1;
-            toastSurface_.frame(toast_, toastPosition_.x + int(12 * (1 - fraction) * toastDpi_ / 96),
-                                toastPosition_.y, BYTE(255 * fraction));
-            if (!IsWindowVisible(toast_)) ShowWindow(toast_, SW_SHOWNOACTIVATE);
+            const float entrance = toastSlideIn_ && elapsed < 150 ? ease(elapsed / 150) : 1;
+            const float opacity = elapsed > 850 ? 1 - ease((elapsed - 850) / 150) : 1;
+            toastSurface_.frame(toast_, toastPosition_.x + int(12 * (1 - entrance) * toastDpi_ / 96),
+                                toastPosition_.y, BYTE(255 * opacity));
+            if (!IsWindowVisible(toast_)) raiseToast();
         }
     }
     if (animationFrameNeedsPaint(now) ||
@@ -1323,6 +1324,8 @@ void UI::toast(std::wstring msg) {
         invalidate();
         return;
     }
+    const bool replacing = toastVisible_ && IsWindowVisible(toast_);
+    KillTimer(hwnd_, 2);
     SetWindowTextW(toast_, msg.c_str());
     toastDpi_ = dpi_;
     toastSurface_.prepare(msg, toastDpi_);
@@ -1333,13 +1336,20 @@ void UI::toast(std::wstring msg) {
     toastStart_ = clockUs();
     toastVisible_ = true;
     const bool animated = animationsEnabled();
-    toastSurface_.frame(toast_, toastPosition_.x + (animated ? int(12 * toastDpi_ / 96) : 0),
-                        toastPosition_.y, animated ? 1 : 255);
-    ShowWindow(toast_, SW_SHOWNOACTIVATE);
+    // Repeated actions update the one visible popup without restarting it at
+    // near-zero opacity. The first frame is readable even before a timer tick.
+    toastSlideIn_ = animated && !replacing;
+    toastSurface_.frame(toast_, toastPosition_.x + (toastSlideIn_ ? int(12 * toastDpi_ / 96) : 0),
+                        toastPosition_.y, 255);
+    raiseToast();
     if (!animated) {
         SetTimer(hwnd_, 2, 1000, nullptr);
     }
     requestAnimation();
+}
+void UI::raiseToast() {
+    SetWindowPos(toast_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 }
 LRESULT CALLBACK UI::toastProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_ERASEBKGND) return 1;

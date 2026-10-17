@@ -70,7 +70,7 @@ class UI {
     std::wstring hover_, message_;
     std::wstring hardware_;
     int64_t hoverStart_ = 0, toastStart_ = 0;
-    bool toastVisible_ = false, exclusion_ = false;
+    bool toastVisible_ = false, toastSlideIn_ = false, exclusion_ = false;
     std::function<void(std::wstring)> editCommit_;
     EngineStats stats_;
     void draw();
@@ -109,6 +109,7 @@ class UI {
     void refresh();
     void notify(std::string msg, bool error);
     void toast(std::wstring msg);
+    void raiseToast();
     void key(WPARAM key);
     void click(float x, float y);
     void scrollAt(float y);
