@@ -170,7 +170,7 @@ int UI::run(int show) {
 }
 bool UI::animationsEnabled() const {
     return cfg_.animations && hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_) &&
-           !stats_.recording && !closing_;
+           !stats_.recording && !inSizeMove_ && !closing_;
 }
 void UI::updateDisplayTiming() {
     MONITORINFOEXW monitor{};
@@ -185,13 +185,14 @@ void UI::updateDisplayTiming() {
 }
 void UI::requestAnimation() { updatePreviewTimer(); }
 void UI::updatePreviewTimer() {
-    const bool active = hwnd_ && page_ == 0 && cfg_.preview && IsWindowVisible(hwnd_) &&
-                        !IsIconic(hwnd_) && !closing_ && !stats_.recording;
+    const bool shown = hwnd_ && page_ == 0 && cfg_.preview && IsWindowVisible(hwnd_) &&
+                       !IsIconic(hwnd_) && !closing_ && !stats_.recording;
+    const bool active = shown && !inSizeMove_;
     if (active != previewTimerActive_) {
         previewTimerActive_ = active;
         if (engine_) engine_->visible(active);
     }
-    if (!active) {
+    if (!shown) {
         bitmap_.Reset();
         displayedPreview_ = {};
         bitmapSerial_ = 0;
@@ -213,10 +214,8 @@ void UI::updatePreviewTimer() {
             SetTimer(hwnd_, 2, UINT(std::max<int64_t>(1, (toastStart_ + 1000000 - clockUs()) / 1000)), nullptr);
         }
     }
-    const bool ticking = (animated && (animationActiveAt(clockUs()) || toastVisible_)) ||
-                         (inSizeMove_ && active);
-    // Native move/resize loops dispatch window timers, not our message wait.
-    const bool messages = ticking && (inSizeMove_ || !previewTimer_.get());
+    const bool ticking = animated && (animationActiveAt(clockUs()) || toastVisible_);
+    const bool messages = ticking && !previewTimer_.get();
     if (messages != messageTimerActive_) {
         messageTimerActive_ = messages;
         if (messages) SetTimer(hwnd_, 4, 16, nullptr);
@@ -555,7 +554,10 @@ void UI::command(int a) {
     }
     switch (a) {
     case 0:
-        if (!engine_->stats().recording) message_.clear();
+        if (!engine_->stats().recording) {
+            message_.clear();
+            toast(L"Starting recording…");
+        }
         engine_->recording();
         break;
     case 1:
@@ -1295,6 +1297,9 @@ void UI::notify(std::string msg, bool error) {
             save(false);
         }
     } else {
+        // Read the current state before deciding how to present a notification;
+        // don't wait for the next dashboard paint or one-second status tick.
+        if (engine_) stats_ = engine_->stats();
         if (msg != "Recording stopped") message_.clear();
         toast(wide(msg));
     }
@@ -1325,9 +1330,11 @@ void UI::toast(std::wstring msg) {
                       monitor.rcWork.top + int(12 * toastDpi_ / 96)};
     toastStart_ = clockUs();
     toastVisible_ = true;
-    if (!animationsEnabled()) {
-        toastSurface_.frame(toast_, toastPosition_.x, toastPosition_.y, 255);
-        ShowWindow(toast_, SW_SHOWNOACTIVATE);
+    const bool animated = animationsEnabled();
+    toastSurface_.frame(toast_, toastPosition_.x + (animated ? int(12 * toastDpi_ / 96) : 0),
+                        toastPosition_.y, animated ? 1 : 255);
+    ShowWindow(toast_, SW_SHOWNOACTIVATE);
+    if (!animated) {
         SetTimer(hwnd_, 2, 1000, nullptr);
     }
     requestAnimation();
@@ -1613,7 +1620,7 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
                 if (selected.window && GetWindowTextW(selected.window, title, 512))
                     selected.name = std::wstring(L"Window · ") + title;
             }
-            if (!IsIconic(h) && (page_ == 6 || page_ == 0))
+            if (!IsIconic(h) && !inSizeMove_ && (page_ == 6 || page_ == 0))
                 invalidate();
         } else if (w == 2 || w == 4) {
             advanceUiFrame();
