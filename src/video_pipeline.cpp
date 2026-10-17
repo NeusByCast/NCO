@@ -27,19 +27,6 @@ VideoPipeline::~VideoPipeline() {
     cv_.notify_one();
     if (thread_.joinable()) thread_.join();
 }
-void VideoPipeline::prepare() {
-    if (synthetic_) return;
-    try {
-        const auto begin = clockUs();
-        if (encoder_.prepare(textures_))
-            Log::get().write("GPU conversion prepared before recording clock; elapsed_ms=" +
-                             std::to_string((clockUs() - begin) / 1000));
-    } catch (const std::exception& error) {
-        // Preparation is optional; ordinary encoding still handles resources
-        // lazily if a driver cannot allocate the startup surfaces in advance.
-        Log::get().write(std::string("GPU startup preparation skipped: ") + error.what());
-    }
-}
 bool VideoPipeline::submit(ID3D11Texture2D* texture, int64_t pts, bool key) {
     int slot = -1;
     {

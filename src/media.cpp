@@ -610,40 +610,6 @@ void VideoEncoder::open(const Config& cfg, Capture* capture, Size input, bool sy
 Track VideoEncoder::track() const {
     return trackOf(codec_);
 }
-bool VideoEncoder::prepare(const std::array<Com<ID3D11Texture2D>, 2>& inputs) {
-    if (!capture_ || !processor_ || (!gpu_ && !nv12Readback_)) return false;
-    // Exercise conversion and create cached views before the recording epoch.
-    // No frames are sent to the encoder, and no CPU readback or GPU wait is used.
-    std::array<AVFrame*, 3> surfaces{};
-    try {
-        const float black[] = {0, 0, 0, 1};
-        for (const auto& input : inputs) {
-            Com<ID3D11RenderTargetView> target;
-            check(capture_->device()->CreateRenderTargetView(input.Get(), nullptr, &target),
-                  "Prepare capture mailbox");
-            capture_->context()->ClearRenderTargetView(target.Get(), black);
-        }
-        const size_t count = gpu_ ? surfaces.size() : inputs.size();
-        for (size_t i = 0; i < count; ++i) {
-            ID3D11Texture2D* output = uploadNv12_.Get();
-            UINT slice = 0;
-            if (gpu_) {
-                surfaces[i] = av_frame_alloc();
-                if (!surfaces[i]) throw std::bad_alloc();
-                avcheck(av_hwframe_get_buffer(frames_, surfaces[i], 0), "Prepare encoder surface");
-                output = reinterpret_cast<ID3D11Texture2D*>(surfaces[i]->data[0]);
-                slice = UINT(reinterpret_cast<uintptr_t>(surfaces[i]->data[1]));
-            }
-            convert(inputs[i % inputs.size()].Get(), output, slice);
-        }
-        capture_->context()->Flush();
-    } catch (...) {
-        for (auto& surface : surfaces) av_frame_free(&surface);
-        throw;
-    }
-    for (auto& surface : surfaces) av_frame_free(&surface);
-    return true;
-}
 std::vector<Packet> VideoEncoder::send(AVFrame* f) {
     auto output = receive(codec_, 0);
     int sent = avcodec_send_frame(codec_, f);

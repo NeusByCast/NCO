@@ -60,9 +60,3 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 
 - Tightened AMD H.264 Ultra VBR's maximum quantizer from 22 to 8 to reduce loss of thin strokes and anti-aliased text, including at startup and after scene changes. Other quality levels, CQP/CBR, and HEVC/AV1 retain their settings.
 - The hardware Balanced preset, colour-sampling correction, capture routing and frame pacing remain in use. Ultra can produce substantially larger files or retain less replay history at the existing memory limit; the bitrate setting remains the VBR target. This is lossy 4:2:0 encoding and does not guarantee pixel-identical desktop text.
-
-### Recording startup frame pacing
-
-- Prepare GPU conversion views, native chroma rendering and three encoder surfaces before the recording clock starts. The worker previously created these resources on its first timed frame, where cold driver work could exhaust the two available mailboxes and leave a visible timestamp gap.
-- Preparation runs only on the final capture/encoder route. It sends no dummy frames to the encoder and adds no CPU readback or GPU completion wait. Recording still uses the existing bounded frame queue.
-- This targets avoidable startup work; it does not manufacture missing source frames or establish a fix for every reported text-edge difference.
