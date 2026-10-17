@@ -946,26 +946,6 @@ void UI::settings() {
             }
         });
         y += 68;
-        field(L"qualityComparison", L"Quality comparison", qualityComparisonStatus(), y,
-              [this](D2D1_RECT_F) {
-            const auto current = engine_->stats();
-            if ((!current.recording && !current.replay) || current.paused || !current.gpuTexturePath) {
-                toast(L"Start recording or replay with GPU texture encoding first");
-                return;
-            }
-            if (requestQualityComparison())
-                toast(L"Comparison in 3 seconds — switch to the affected screen");
-            else
-                toast(L"A quality comparison is already pending");
-        });
-        y += 68;
-        field(L"qualityFolder", L"Comparison files", L"Open local comparison folder", y,
-              [this](D2D1_RECT_F) {
-            const auto folder = appDir() / L"quality-comparisons";
-            std::filesystem::create_directories(folder);
-            ShellExecuteW(hwnd_, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        });
-        y += 68;
         field(L"manualRemux", L"Remux a recording", L"Choose file… (original retained)", y,
               [this](D2D1_RECT_F) {
             wchar_t input[32768]{}, output[32768]{};

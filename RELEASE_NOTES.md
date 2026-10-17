@@ -49,9 +49,3 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - Auto capture evaluates encoder-local WGC at startup when display-adapter encoding falls back to hardware frame upload. The retry keeps the successful codec and all image settings, verifies unchanged source dimensions, and requires direct GPU-texture encoding. Unsupported retries restore the compatible display capture path; explicit capture backends are respected. No runtime performance-monitor process or dependency is added.
 
 - Preview and UI animations stop while minimized or recording. Restoring the dashboard requests a fresh preview even for a static source; render-target recreation can restore the last displayed image. Window resizing coalesces render-target changes into paint events. Recording, encoder quality, audio and file finalization are unchanged by these GUI changes.
-
-### One-shot quality comparison
-
-- Diagnostics can save matching capture, GPU-converted NV12, and software-decoded encoded frames to a local comparison folder. Run while recording or replay is active; the capture occurs after three seconds.
-- The probe allocates readback surfaces and writes images only when explicitly requested. It does not change normal colour conversion, encoder quality, capture routing, or synchronization. A comparison may briefly hitch because it reads GPU data and forces one keyframe.
-- Screen images remain local. This diagnostic locates artifacts; it is not itself a recording-quality fix.
