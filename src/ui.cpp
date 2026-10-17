@@ -270,9 +270,6 @@ void UI::resources() {
                   &target_),
               "UI render target");
         check(target_->CreateSolidColorBrush(ink, &brush_), "UI brush");
-        // Desktop video subsamples colour. Grayscale glyph edges avoid
-        // introducing RGB subpixel fringes into recordings of NCO itself.
-        target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
         bitmap_.Reset();
     }
 }

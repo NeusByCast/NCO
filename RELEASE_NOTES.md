@@ -2,8 +2,6 @@
 
 - Notifications explicitly reassert topmost placement without activating the window. Their first frame is fully readable; rapid repeated actions replace the same visible popup without restarting a fade from near-zero opacity. Recording/replay encoding and capture exclusion are unchanged.
 
-- NCO renders its own interface text with grayscale antialiasing to avoid coloured subpixel fringes in 4:2:0 desktop captures. This does not change font rendering in other applications or restore full-resolution colour to 4:2:0 recordings.
-
 - Replay requests keyframes at the encoder's normal two-second interval, with retries when a boundary frame cannot be submitted, instead of forcing an IDR every second. Replay clips remain keyframe-aligned and can include up to one GOP of extra history. Buffer insertion appends ordered packets directly; GOP eviction removes a counted prefix without repeatedly scanning it. Resolution, frame rate, bitrate, quantizer limits and capture routing are unchanged. Hardware stutter still requires confirmation on the affected PC.
 
 - Moving/resizing the app pauses preview acquisition and UI animations, retains the last image, and resumes preview on release. The native move loop no longer drives preview repaint timers. Record requests show one immediate Starting popup; output-file readiness refreshes the dashboard without a second popup. Notifications read current engine status and present their first frame immediately.
