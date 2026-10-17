@@ -36,6 +36,7 @@ class VideoPipeline {
     const std::string& selected() const { return encoder_.selected; }
     const std::string& adapter() const { return encoder_.selectedAdapter; }
     bool gpu() const { return encoder_.gpu(); }
+    void prepare(); // Before the first submit, while the worker is idle.
     bool submit(ID3D11Texture2D* texture, int64_t pts, bool key);
     std::vector<Packet> collect(bool recoverOnError = false);
     void finish();

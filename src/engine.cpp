@@ -271,6 +271,9 @@ void Engine::run(std::stop_token token) {
                                                     : "Microphone + desktop";
             audio.push_back(std::move(a));
         }
+        // Only the final capture/encoder pair is prepared. An unused hybrid-GPU
+        // fallback session must not do this work. No encoded dummy frames.
+        video->prepare();
         epoch = clockUs();
         nextVideo = epoch;
         nextFrame = 0;

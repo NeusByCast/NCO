@@ -101,6 +101,7 @@ class VideoEncoder {
     ~VideoEncoder();
     void open(const Config& config, Capture* capture, Size input, bool synthetic = false);
     Track track() const;
+    bool prepare(const std::array<Com<ID3D11Texture2D>, 2>& inputs);
     std::vector<Packet> encode(ID3D11Texture2D* texture, int64_t pts, bool key = false);
     std::vector<Packet> synthetic(int64_t pts, bool key = false);
     std::vector<Packet> flush();
