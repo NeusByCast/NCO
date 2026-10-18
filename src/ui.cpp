@@ -10,7 +10,7 @@
 #include <sstream>
 #include <windowsx.h>
 namespace nco {
-static const auto bg = D2D1::ColorF(0x19130f), panel = D2D1::ColorF(0x251d17),
+static const D2D1_COLOR_F bg = D2D1::ColorF(0x19130f), panel = D2D1::ColorF(0x251d17),
                   surface = D2D1::ColorF(0x30251d), accent = D2D1::ColorF(0xc68c59),
                   ink = D2D1::ColorF(0xeee4da), muted = D2D1::ColorF(0xa69585),
                   danger = D2D1::ColorF(0xe09a86);
@@ -1040,7 +1040,7 @@ void UI::settings() {
             start = end + 3;
         }
         section(L"System", L"Current encoder activity and available graphics adapters.", 0,
-                240.f + adapters.size() * 48.f);
+                240.f + float(adapters.size()) * 48.f);
         std::wstring encoderName = L"Idle";
         for (const auto& encoder : encoders_)
             if (encoder.name == stats_.encoder) encoderName = encoder.label;
