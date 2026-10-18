@@ -22,11 +22,11 @@ void UI::applyTheme() {
     // Only colors change. Keep the renderer, cached text and frame scheduling.
     static constexpr uint32_t colors[3][10] = {
         {0x19130f, 0x251d17, 0x30251d, 0xc68c59, 0xeee4da,
-         0xa69585, 0xe09a86, 0x211913, 0x100d0b, 0x19130f},
+         0xc1ae9d, 0xe09a86, 0x211913, 0x100d0b, 0x19130f},
         {0x101114, 0x191b20, 0x24272e, 0xd4d7de, 0xf0f1f5,
-         0x9da4b4, 0xff9b91, 0x14161a, 0x0c0d10, 0x17191e},
+         0xbec3cc, 0xff9b91, 0x14161a, 0x0c0d10, 0x17191e},
         {0xf4f5f7, 0xffffff, 0xedeff3, 0x365cbe, 0x1f2937,
-         0x5c6678, 0xb42318, 0xe9ecf2, 0xe1e5ec, 0xffffff}
+         0x4b5563, 0xb42318, 0xe9ecf2, 0xe1e5ec, 0xffffff}
     };
     const auto& c = colors[std::clamp(cfg_.theme, 0, 2)];
     bg = D2D1::ColorF(c[0]); panel = D2D1::ColorF(c[1]);
@@ -443,7 +443,7 @@ void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::functio
     if (id == pressed_)
         color = blend(color, bg, .2f);
     if (!enabled)
-        color = blend(panel, color, .4f);
+        color = blend(panel, surface, .5f);
     round(r, color, 9);
     auto fg = enabled ? (primary ? onAccent : ink) : muted;
     if (!glyph.empty())
@@ -467,7 +467,7 @@ void UI::field(std::wstring id, std::wstring label, std::wstring value, float y,
     text(value, {r.left + 12, r.top, r.right - 34, r.bottom}, 13, enabled ? ink : muted);
     const wchar_t* glyph = kind == FieldKind::Number ? L"edit" : kind == FieldKind::Folder
         ? L"folder" : kind == FieldKind::Action ? L"arrow" : expanded ? L"chevronUp" : L"chevron";
-    icon(glyph, {r.right - 30, r.top, r.right - 8, r.bottom}, enabled ? muted : blend(panel, muted, .6f));
+    icon(glyph, {r.right - 30, r.top, r.right - 8, r.bottom}, muted);
 }
 void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
                 std::function<void()> click, bool enabled, std::wstring hint) {
