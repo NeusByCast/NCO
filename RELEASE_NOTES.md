@@ -79,3 +79,10 @@ Dropdown scrolling uses the number of visible rows, exposes a scroll indicator, 
 - Added VBR quantizer limits for software H.264, NVENC and H.264/HEVC QSV so a manual bitrate no longer bypasses the preset's detail limit. NVENC forced keyframes are IDRs for decodable recording/replay boundaries. Existing processing presets, capture routing and bounded queues remain in use.
 - Expanded verification to 180 H.264/VP9 encode/decode cases covering FPS, presets, rate modes and automatic/manual bitrates; checks use runtime encoder modes and actual packet quantizers. Every resolution preset, including 4K, is decoded from each software encoder. Available hardware encoders are attempted and unavailable devices are reported separately.
 - Recording UI checks cover all frame rates, presets, resolution choices, formats, available encoders, replay toggle/durations, numeric persistence, CQP bitrate disabling and recording locks. Native folder selection/cancellation and Unicode folder writes are exercised. Reports are included as a separate Windows build artifact.
+# Settings layout refresh
+
+- Group Recording, Audio and Hotkeys controls into labeled sections.
+- Organize Settings into capture options, recording tools, diagnostics and readable system information.
+- Refresh settings dropdowns with subtle selection highlights, checkmarks and clearer field icons.
+- Preserve the dashboard, recording pipeline, encoder settings and UI scheduling.
+

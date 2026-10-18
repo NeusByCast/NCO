@@ -352,6 +352,29 @@ void UI::icon(const std::wstring& name, D2D1_RECT_F r, D2D1_COLOR_F color) {
     else if (name == L"chevron") {
         line(-4, -2, 0, 2);
         line(0, 2, 4, -2);
+    } else if (name == L"chevronUp") {
+        line(-4, 2, 0, -2);
+        line(0, -2, 4, 2);
+    } else if (name == L"check") {
+        line(-5, 0, -1, 4);
+        line(-1, 4, 6, -4);
+    } else if (name == L"edit") {
+        line(-5, 5, -3, 0);
+        line(-3, 0, 3, -6);
+        line(3, -6, 6, -3);
+        line(6, -3, 0, 3);
+        line(0, 3, -5, 5);
+    } else if (name == L"folder") {
+        line(-7, -4, -2, -4);
+        line(-2, -4, 0, -2);
+        line(0, -2, 7, -2);
+        line(7, -2, 7, 6);
+        line(7, 6, -7, 6);
+        line(-7, 6, -7, -4);
+    } else if (name == L"arrow") {
+        line(-6, 0, 6, 0);
+        line(2, -4, 6, 0);
+        line(6, 0, 2, 4);
     } else if (name == L"replay") {
         target_->DrawEllipse(D2D1::Ellipse({x, y}, 7, 7), brush_.Get(), 1.5f);
         line(-7, -7, -7, -1);
@@ -405,20 +428,25 @@ void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::functio
     controls_.push_back({r, std::move(id), std::move(click), enabled});
 }
 void UI::field(std::wstring id, std::wstring label, std::wstring value, float y,
-               std::function<void(D2D1_RECT_F)> click, bool enabled) {
-    float left = 206, right = w_ - 28, mid = left + (right - left) * .49f;
-    round({left, y, right, y + 58}, hoverColor(id, panel), 10);
+               std::function<void(D2D1_RECT_F)> click, bool enabled, FieldKind kind) {
+    float left = 206, right = w_ - 28, mid = left + (right - left) * .46f;
+    round({left + 4, y, right - 4, y + 58}, enabled ? hoverColor(id, panel) : panel, 6);
     text(label, {left + 16, y, mid - 12, y + 58}, 14, enabled ? ink : muted);
     D2D1_RECT_F r{mid, y + 10, right - 12, y + 48};
-    round(r, surface, 9);
+    const bool expanded = popup_.open && !popup_.closing && popup_.owner == id;
+    round(r, enabled ? surface : blend(panel, surface, .4f), 7);
+    brush_->SetColor(expanded ? accent : blend(surface, ink, enabled ? .12f : .04f));
+    target_->DrawRoundedRectangle(D2D1::RoundedRect(r, 7, 7), brush_.Get(), 1);
     controls_.push_back({{left, y, right, y + 58}, id, [r, click] { click(r); }, enabled});
-    text(value, {r.left + 14, r.top, r.right - 34, r.bottom}, 13, enabled ? ink : muted, true);
-    icon(L"chevron", {r.right - 30, r.top, r.right - 8, r.bottom}, muted);
+    text(value, {r.left + 12, r.top, r.right - 34, r.bottom}, 13, enabled ? ink : muted);
+    const wchar_t* glyph = kind == FieldKind::Number ? L"edit" : kind == FieldKind::Folder
+        ? L"folder" : kind == FieldKind::Action ? L"arrow" : expanded ? L"chevronUp" : L"chevron";
+    icon(glyph, {r.right - 30, r.top, r.right - 8, r.bottom}, enabled ? muted : blend(panel, muted, .6f));
 }
 void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
                 std::function<void()> click, bool enabled, std::wstring hint) {
     float left = 206, right = w_ - 28;
-    round({left, y, right, y + 58}, hoverColor(id, panel));
+    round({left + 4, y, right - 4, y + 58}, enabled ? hoverColor(id, panel) : panel, 6);
     text(label, {left + 16, y + 4, right - 84, y + (hint.empty() ? 54 : 30)}, 14,
          enabled ? ink : muted);
     if (!hint.empty())
@@ -695,6 +723,16 @@ void UI::dashboard() {
 void UI::settings() {
     float y = 140 - float(scroll_);
     bool locked = stats_.recording;
+    auto section = [&](const wchar_t* title, const wchar_t* description, int rows, float extra = 0) {
+        if (y > 140 - float(scroll_)) y += 22;
+        text(title, {206, y, w_ - 28, y + 24}, 16, ink, true);
+        text(description, {206, y + 25, w_ - 28, y + 45}, 12, muted);
+        y += 54;
+        round({206, y - 4, w_ - 28, y + rows * 60.f + extra + 4}, panel, 10);
+        brush_->SetColor(blend(panel, ink, .065f));
+        for (int row = 1; extra == 0 && row < rows; ++row)
+            target_->DrawLine({222, y + row * 60.f - 1}, {w_ - 44, y + row * 60.f - 1}, brush_.Get());
+    };
     auto pick = [&](std::wstring id, std::wstring label, std::wstring value,
                     std::vector<std::wstring> items, int selected, std::function<void(int)> choose,
                     bool enabled = true) {
@@ -704,7 +742,7 @@ void UI::settings() {
                 dropdown(r, items, selected, choose);
             },
             enabled);
-        y += 68;
+        y += 60;
     };
     auto num = [&](std::wstring id, std::wstring label, int value, int lo, int hi,
                    std::function<void(int)> fn, bool enabled = true) {
@@ -716,8 +754,8 @@ void UI::settings() {
                     save();
                 });
             },
-            enabled);
-        y += 68;
+            enabled, FieldKind::Number);
+        y += 60;
     };
     auto tog = [&](std::wstring id, std::wstring label, bool value, std::function<void()> fn,
                    bool enabled = true, std::wstring hint = L"") {
@@ -728,7 +766,7 @@ void UI::settings() {
                 save();
             },
             enabled, hint);
-        y += 68;
+        y += 60;
     };
     auto directory = [&](bool replay) {
         field(
@@ -741,10 +779,12 @@ void UI::settings() {
                     save();
                 }
             },
-            !stats_.recording);
-        y += 68;
+            !stats_.recording, FieldKind::Folder);
+        y += 60;
     };
     if (page_ == 1) {
+        section(L"Video", L"Choose the frame rate and output resolution.",
+                cfg_.resolutionMode == 5 ? 4 : 2);
         pick(
             L"fps", L"Frame rate", std::to_wstring(cfg_.fps) + L" FPS",
             {L"15 FPS", L"30 FPS", L"60 FPS"},
@@ -771,35 +811,7 @@ void UI::settings() {
                 L"height", L"Custom height", cfg_.height, 64, 4320,
                 [this](int n) { cfg_.height = n & ~1; }, !locked);
         }
-        std::vector<std::wstring> q = {L"Low", L"Medium", L"High", L"Very High", L"Ultra"};
-        pick(
-            L"quality", L"Quality preset", q[cfg_.quality], q, cfg_.quality,
-            [this](int i) {
-                cfg_.quality = i;
-                save();
-            },
-            !locked);
-        num(
-            L"bitrate", cfg_.rateControl == 1 ? L"Bitrate · not used in CQP" : L"Bitrate · kbps (0 = automatic)",
-            cfg_.bitrateKbps, 0, 150000,
-            [this](int n) { cfg_.bitrateKbps = n; }, !locked && cfg_.rateControl != 1);
-        const std::vector<std::wstring> rateModes = {
-            L"VBR · peak constrained", L"CQP · constant quality", L"CBR · constant bitrate"};
-        pick(
-            L"ratecontrol", L"Rate control", rateModes[size_t(cfg_.rateControl)], rateModes,
-            cfg_.rateControl,
-            [this](int i) {
-                cfg_.rateControl = i;
-                save();
-            },
-            !locked);
-        const wchar_t* rateHint = cfg_.rateControl == 1
-            ? L"CQP uses the quality preset. Bitrate is ignored and file size varies."
-            : cfg_.rateControl == 2
-                ? L"CBR prioritizes bitrate. A low bitrate can reduce detail even on Ultra."
-                : L"VBR uses the bitrate target. Set 0 to choose bitrate from quality, resolution and FPS.";
-        text(rateHint, {206, y, w_ - 28, y + 32}, 11, muted);
-        y += 40;
+        section(L"Encoding", L"Choose the encoder, compression quality and bitrate.", 4);
         std::vector<std::wstring> labels = {L"Auto · best compatible encoder"};
         std::vector<std::string> names = {"auto"};
         int selected = 0;
@@ -818,6 +830,36 @@ void UI::settings() {
                 save();
             },
             !locked && !probing_);
+        std::vector<std::wstring> q = {L"Low", L"Medium", L"High", L"Very High", L"Ultra"};
+        pick(
+            L"quality", L"Quality preset", q[cfg_.quality], q, cfg_.quality,
+            [this](int i) {
+                cfg_.quality = i;
+                save();
+            },
+            !locked);
+        const std::vector<std::wstring> rateModes = {
+            L"VBR · peak constrained", L"CQP · constant quality", L"CBR · constant bitrate"};
+        pick(
+            L"ratecontrol", L"Rate control", rateModes[size_t(cfg_.rateControl)], rateModes,
+            cfg_.rateControl,
+            [this](int i) {
+                cfg_.rateControl = i;
+                save();
+            },
+            !locked);
+        num(
+            L"bitrate", cfg_.rateControl == 1 ? L"Bitrate · not used in CQP" : L"Bitrate · kbps (0 = automatic)",
+            cfg_.bitrateKbps, 0, 150000,
+            [this](int n) { cfg_.bitrateKbps = n; }, !locked && cfg_.rateControl != 1);
+        const wchar_t* rateHint = cfg_.rateControl == 1
+            ? L"CQP uses the quality preset. Bitrate is ignored and file size varies."
+            : cfg_.rateControl == 2
+                ? L"CBR prioritizes bitrate. A low bitrate can reduce detail even on Ultra."
+                : L"VBR uses the bitrate target. Set 0 to choose bitrate from quality, resolution and FPS.";
+        text(rateHint, {222, y + 4, w_ - 44, y + 32}, 11, muted);
+        y += 40;
+        section(L"Files", L"Choose where recordings are saved and how they are packaged.", 3);
         std::vector<std::wstring> formats = {L"MP4", L"MKV", L"MOV", L"WebM · AV1 / VP9"};
         std::vector<std::string> ids = {"mp4", "mkv", "mov", "webm"};
         int fi = int(std::find(ids.begin(), ids.end(), cfg_.format) - ids.begin());
@@ -834,7 +876,8 @@ void UI::settings() {
         tog(
             L"remux", L"Automatically remux recordings", cfg_.remux,
             [this] { cfg_.remux = !cfg_.remux; }, !locked,
-            L"MKV recordings are already in the safe target; other formats remux after recording.");
+            L"Remux other formats to MKV after recording; keep the originals.");
+        section(L"Replay buffer", L"Keep recent footage ready to save with your replay shortcut.", 2);
         tog(
             L"replayenabled", L"Enable replay buffer", cfg_.replay,
             [this] { cfg_.replay = !cfg_.replay; }, true);
@@ -864,36 +907,48 @@ void UI::settings() {
                      save();
                  });
         };
+        section(L"Microphone", L"Select your input device and adjust your voice level.", 4);
         device(true);
-        device(false);
-        field(L"refreshdevices", L"Detect connected devices", L"Refresh audio devices", y,
-              [this](D2D1_RECT_F) {
-                  mics_ = audioDevices(true);
-                  speakers_ = audioDevices(false);
-                  engine_->refreshAudio();
-                  invalidate();
-              });
-        y += 68;
         tog(L"mic", L"Microphone", cfg_.mic, [this] { cfg_.mic = !cfg_.mic; });
         num(L"micvolume", L"Microphone volume · %", cfg_.micVolume, 0, 100,
             [this](int n) { cfg_.micVolume = n; });
         num(L"micgain", L"Microphone gain · %", cfg_.micGain, 0, 300,
             [this](int n) { cfg_.micGain = n; });
+        section(L"Desktop audio", L"Select the output device whose sound you want to capture.", 3);
+        device(false);
         tog(L"desktop", L"Desktop audio", cfg_.desktop, [this] { cfg_.desktop = !cfg_.desktop; });
         num(L"desktopvolume", L"Desktop volume · %", cfg_.desktopVolume, 0, 100,
             [this](int n) { cfg_.desktopVolume = n; });
+        section(L"Tracks and timing", L"Control track separation and synchronization.", 2);
         tog(
             L"tracks", L"Separate microphone and desktop tracks", cfg_.separateTracks,
             [this] { cfg_.separateTracks = !cfg_.separateTracks; }, !locked);
         num(
             L"offset", L"Audio synchronization offset · ms", cfg_.audioOffsetMs, -500, 500,
             [this](int n) { cfg_.audioOffsetMs = n; }, !locked);
+        section(L"Devices", L"Refresh this list after connecting or disconnecting audio hardware.", 1);
+        field(L"refreshdevices", L"Detect connected devices", L"Refresh audio devices", y,
+              [this](D2D1_RECT_F) {
+                  mics_ = audioDevices(true);
+                  speakers_ = audioDevices(false);
+                  engine_->refreshAudio();
+                  invalidate();
+              }, true, FieldKind::Action);
+        y += 60;
     } else if (page_ == 4) {
         const wchar_t* names[] = {L"Start / stop recording", L"Pause / resume", L"Save replay",
                                   L"Microphone mute", L"Desktop audio mute"};
         for (int i = 0; i < 5; ++i) {
+            if (i == 0 || i == 3) {
+                const int end = i == 0 ? 3 : 5;
+                float errors = 0;
+                for (int j = i; j < end; ++j)
+                    if (size_t(j) < keyErrors_.size() && !keyErrors_[size_t(j)].empty()) errors += 32;
+                section(i == 0 ? L"Recording and replay" : L"Audio controls",
+                        i == 0 ? L"Click a shortcut, then press a key or combination. Esc cancels."
+                               : L"Mute your microphone or desktop audio from any app.", end - i, errors);
+            }
             float row = y;
-            round({206, y, w_ - 28, y + 58}, panel);
             text(names[i], {222, y, 206 + (w_ - 234) * .45f, y + 58}, 14, ink);
             button(L"key" + std::to_wstring(i),
                    hotkeyIndex_ == i ? L"Press a key…" : shortcutText(cfg_.keys[size_t(i)]),
@@ -913,47 +968,21 @@ void UI::settings() {
                 text(keyErrors_[size_t(i)], {222, y + 62, w_ - 30, y + 88}, 11, danger);
                 y += 32;
             }
-            y += 68;
+            y += 60;
         }
     } else if (page_ == 6) {
-        round({206, y, w_ - 28, y + 180}, panel);
-        text(L"Hardware and encoding", {222, y + 12, w_ - 42, y + 42}, 16, ink, true);
-        text(L"Adapters: " + hardware_, {222, y + 46, w_ - 42, y + 70}, 12, muted);
-        std::wstring encoderName = L"Not recording";
-        for (const auto& e : encoders_)
-            if (e.name == stats_.encoder)
-                encoderName = e.label;
-        text(L"Encoder: " + encoderName,
-             {222, y + 74, w_ - 42, y + 98}, 13, muted);
-        text(L"Recorded frames: " + std::to_wstring(stats_.frames) + L"   Skipped frames: " +
-                 std::to_wstring(stats_.dropped),
-             {222, y + 102, w_ - 42, y + 126}, 13, muted);
-        text(L"FPS: " + std::to_wstring(int(stats_.actualFps)) + L"   Output: " +
-                 std::to_wstring(stats_.output.w) + L" × " + std::to_wstring(stats_.output.h) +
-                 L"   Encoding: " + std::to_wstring(stats_.encodeMs).substr(0, 5) + L" ms",
-             {222, y + 130, w_ - 42, y + 154}, 13, muted);
-        y += 194;
-        text(L"Process CPU: " + std::to_wstring(stats_.cpuPercent).substr(0, 5) +
-                 L"%   Working set: " + std::to_wstring(int(stats_.workingSetMiB)) + L" MiB",
-             {206, y, w_ - 28, y + 32}, 12, muted);
-        y += 44;
-        tog(
-            L"logging", L"Verbose diagnostics", cfg_.verbose,
-            [this] { cfg_.verbose = !cfg_.verbose; }, true);
-        field(L"openlog", L"Diagnostic file", L"Open diagnostic log", y, [this](D2D1_RECT_F) {
-            ShellExecuteW(hwnd_, L"open", (appDir() / L"diagnostic.log").c_str(), nullptr, nullptr,
-                          SW_SHOWNORMAL);
-        });
-        y += 68;
-        field(L"exportlog", L"Export diagnostics", L"Choose export folder", y, [this](D2D1_RECT_F) {
-            auto folder = folderDialog(hwnd_, cfg_.directory);
-            if (!folder.empty()) {
-                exportDiagnostics(std::filesystem::path(folder) / L"NCO-diagnostic.txt",
-                                  cfg_, engine_->stats(), dpi_, encoders_);
-                toast(L"Diagnostics exported");
-            }
-        });
-        y += 68;
+        section(L"Capture", L"Choose the capture method for compatibility with your apps.", 1);
+        const std::vector<std::wstring> apis = {L"Auto (recommended)", L"Windows Graphics Capture",
+                                                L"Desktop Duplication"};
+        pick(
+            L"captureApi", L"Capture compatibility", apis[size_t(cfg_.captureBackend)], apis,
+            cfg_.captureBackend,
+            [this](int index) {
+                cfg_.captureBackend = index;
+                save();
+            },
+            !locked);
+        section(L"Recording tools", L"Repackage an existing recording without encoding it again.", 1);
         field(L"manualRemux", L"Remux a recording", L"Choose file… (original retained)", y,
               [this](D2D1_RECT_F) {
             wchar_t input[32768]{}, output[32768]{};
@@ -983,18 +1012,72 @@ void UI::settings() {
                 throw std::runtime_error("Choose a new filename; existing recordings are preserved");
             engine_->remux(source, target);
             message_ = L"Remux queued";
-        });
-        y += 68;
-        const std::vector<std::wstring> apis = {L"Auto (recommended)", L"Windows Graphics Capture",
-                                                L"Desktop Duplication"};
-        pick(
-            L"captureApi", L"Capture compatibility", apis[size_t(cfg_.captureBackend)], apis,
-            cfg_.captureBackend,
-            [this](int index) {
-                cfg_.captureBackend = index;
-                save();
-            },
-            !locked);
+        }, true, FieldKind::Action);
+        y += 60;
+        section(L"Diagnostics", L"Manage logging and export details when troubleshooting.", 3);
+        tog(
+            L"logging", L"Verbose diagnostics", cfg_.verbose,
+            [this] { cfg_.verbose = !cfg_.verbose; }, true);
+        field(L"openlog", L"Diagnostic file", L"Open diagnostic log", y, [this](D2D1_RECT_F) {
+            ShellExecuteW(hwnd_, L"open", (appDir() / L"diagnostic.log").c_str(), nullptr, nullptr,
+                          SW_SHOWNORMAL);
+        }, true, FieldKind::Action);
+        y += 60;
+        field(L"exportlog", L"Export diagnostics", L"Choose export folder", y, [this](D2D1_RECT_F) {
+            auto folder = folderDialog(hwnd_, cfg_.directory);
+            if (!folder.empty()) {
+                exportDiagnostics(std::filesystem::path(folder) / L"NCO-diagnostic.txt",
+                                  cfg_, engine_->stats(), dpi_, encoders_);
+                toast(L"Diagnostics exported");
+            }
+        }, true, FieldKind::Action);
+        y += 60;
+        std::vector<std::wstring> adapters;
+        for (size_t start = 0; start < hardware_.size();) {
+            const auto end = hardware_.find(L" / ", start);
+            adapters.push_back(hardware_.substr(start, end == std::wstring::npos ? end : end - start));
+            if (end == std::wstring::npos) break;
+            start = end + 3;
+        }
+        section(L"System", L"Current encoder activity and available graphics adapters.", 0,
+                240.f + adapters.size() * 48.f);
+        std::wstring encoderName = L"Idle";
+        for (const auto& encoder : encoders_)
+            if (encoder.name == stats_.encoder) encoderName = encoder.label;
+        text(L"Active encoder", {222, y, 390, y + 48}, 13, muted);
+        text(encoderName, {390, y, w_ - 44, y + 48}, 13, ink, true);
+        y += 52;
+        auto decimal = [](double value) {
+            std::wostringstream out;
+            out << std::fixed << std::setprecision(1) << value;
+            return out.str();
+        };
+        const std::wstring labels[] = {L"Frame rate", L"Output resolution", L"Encoding time",
+                                       L"Recorded frames", L"Skipped frames", L"CPU / memory"};
+        const std::wstring values[] = {
+            decimal(stats_.actualFps) + L" FPS",
+            std::to_wstring(stats_.output.w) + L" × " + std::to_wstring(stats_.output.h),
+            decimal(stats_.encodeMs) + L" ms", std::to_wstring(stats_.frames),
+            std::to_wstring(stats_.dropped), decimal(stats_.cpuPercent) + L"% / " +
+                std::to_wstring(int(stats_.workingSetMiB)) + L" MiB"};
+        const float column = (w_ - 282) / 3;
+        for (int i = 0; i < 6; ++i) {
+            float x = 222 + (i % 3) * (column + 8), top = y + (i / 3) * 72.f;
+            round({x, top, x + column, top + 64}, surface, 7);
+            text(labels[i], {x + 12, top + 7, x + column - 12, top + 28}, 11, muted);
+            text(values[i], {x + 12, top + 28, x + column - 12, top + 55}, 16, ink, true);
+        }
+        y += 154;
+        text(L"GRAPHICS ADAPTERS", {222, y, w_ - 44, y + 22}, 11, muted, true);
+        y += 28;
+        for (const auto& adapter : adapters) {
+            const auto separator = adapter.find(L" · ");
+            text(adapter.substr(0, separator), {222, y, w_ - 44, y + 24}, 13, ink);
+            if (separator != std::wstring::npos)
+                text(adapter.substr(separator + 3), {222, y + 24, w_ - 44, y + 42}, 11, muted);
+            y += 48;
+        }
+        y += 6;
 
     }
     // Clamp after layout: avoids blank scroll regions after changing a section.
@@ -1033,22 +1116,37 @@ void UI::popup() {
         progress = 1 - ease(float(clockUs() - a.closeStart) / 150000);
     D2D1_RECT_F box{x, upward ? y + height * (1 - progress) : y,
                       x + width, upward ? y + height : y + height * progress};
-    round(box, surface, 10);
+    const bool modern = page_ != 0;
+    if (modern) {
+        round({box.left, box.top + 3, box.right, box.bottom + 3}, bg, 9);
+        round(box, panel, 9);
+        brush_->SetColor(blend(surface, ink, .12f));
+        target_->DrawRoundedRectangle(D2D1::RoundedRect(box, 9, 9), brush_.Get(), 1);
+    } else
+        round(box, surface, 10);
     target_->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (int j = 0; j < visible; ++j) {
         int i = j + a.scroll;
         if (i >= int(a.items.size()))
             break;
         D2D1_RECT_F r{x + 6, y + 6 + j * 36, x + width - 6, y + 42 + j * 36};
-        button(
-            L"option" + std::to_wstring(i), a.items[size_t(i)], r,
-            [this, i] {
-                auto choose = popup_.choose;
-                dismissPopup();
-                choose(i);
-                invalidate();
-            },
-            i == a.selected, !a.closing);
+        const std::wstring id = L"option" + std::to_wstring(i);
+        auto select = [this, i] {
+            auto choose = popup_.choose;
+            dismissPopup();
+            choose(i);
+            invalidate();
+        };
+        if (modern) {
+            const bool selected = i == a.selected;
+            round(r, hoverColor(id, selected ? blend(panel, accent, .15f) : panel), 5);
+            if (selected)
+                icon(L"check", {r.left + 5, r.top, r.left + 31, r.bottom}, accent);
+            text(a.items[size_t(i)], {r.left + 36, r.top, r.right - 12, r.bottom}, 13,
+                 selected ? ink : muted, selected);
+            controls_.push_back({r, id, std::move(select), !a.closing});
+        } else
+            button(id, a.items[size_t(i)], r, std::move(select), i == a.selected, !a.closing);
         controls_.back().rect.top = std::max(r.top, box.top);
         controls_.back().rect.bottom = std::min(r.bottom, box.bottom);
         if (controls_.back().rect.bottom <= controls_.back().rect.top)
@@ -1156,6 +1254,13 @@ void UI::draw() {
         L"close", L"", {w_ - 50, 8, w_ - 8, 42}, [this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); },
         false, true, L"close");
     text(titles[page_], {206, 62, w_ - 28, 100}, 27, ink, true);
+    if (page_ != 0) {
+        const wchar_t* description = page_ == 1 ? L"Video, encoding, files and replay buffer"
+            : page_ == 2 ? L"Microphone, desktop sound and audio tracks"
+            : page_ == 4 ? L"Keyboard shortcuts available across your apps"
+                         : L"Capture options, recording tools and system information";
+        text(description, {206, 102, w_ - 28, 125}, 12, muted);
+    }
     float fade = animationsEnabled() ? ease(float(clockUs() - navigationStart_) / 150000) : 1;
     const bool fading = fade < 1;
     if (fading) target_->PushLayer(D2D1::LayerParameters({180, 136, w_, h_ - 38}, nullptr,

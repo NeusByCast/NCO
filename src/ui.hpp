@@ -91,8 +91,10 @@ class UI {
                 bool primary = false, bool enabled = true, std::wstring glyph = L"");
     void toggle(std::wstring id, std::wstring label, float y, bool value,
                 std::function<void()> click, bool enabled = true, std::wstring hint = L"");
+    enum class FieldKind { Select, Number, Folder, Action };
     void field(std::wstring id, std::wstring label, std::wstring value, float y,
-               std::function<void(D2D1_RECT_F)> click, bool enabled = true);
+               std::function<void(D2D1_RECT_F)> click, bool enabled = true,
+               FieldKind kind = FieldKind::Select);
     void dropdown(D2D1_RECT_F rect, std::vector<std::wstring> items, int selected,
                   std::function<void(int)> choose);
     void number(std::wstring title, int value, int lo, int hi, D2D1_RECT_F rect,
