@@ -10,7 +10,8 @@ void ToastSurface::reset() {
     dc_ = nullptr;
     previous_ = nullptr;
 }
-void ToastSurface::prepare(const std::wstring& message, float dpi) {
+void ToastSurface::prepare(const std::wstring& message, float dpi,
+                           uint32_t background, uint32_t foreground) {
     reset();
     size_ = {int(280 * dpi / 96), int(48 * dpi / 96)};
     BITMAPINFO info{};
@@ -25,9 +26,9 @@ void ToastSurface::prepare(const std::wstring& message, float dpi) {
     if (!dc_ || !bitmap_ || !raw) throw std::runtime_error("Cannot render notification");
     previous_ = SelectObject(dc_, bitmap_);
     auto pixels = static_cast<uint32_t*>(raw);
-    std::fill_n(pixels, size_t(size_.cx) * size_.cy, 0x0030251du);
+    std::fill_n(pixels, size_t(size_.cx) * size_.cy, background & 0x00ffffffu);
     SetBkMode(dc_, TRANSPARENT);
-    SetTextColor(dc_, RGB(238, 228, 218));
+    SetTextColor(dc_, RGB((foreground >> 16) & 255, (foreground >> 8) & 255, foreground & 255));
     HFONT font = CreateFontW(-int(15 * dpi / 96), 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     auto oldFont = SelectObject(dc_, font);

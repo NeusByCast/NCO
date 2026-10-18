@@ -10,10 +10,38 @@
 #include <sstream>
 #include <windowsx.h>
 namespace nco {
-static const D2D1_COLOR_F bg = D2D1::ColorF(0x19130f), panel = D2D1::ColorF(0x251d17),
-                  surface = D2D1::ColorF(0x30251d), accent = D2D1::ColorF(0xc68c59),
-                  ink = D2D1::ColorF(0xeee4da), muted = D2D1::ColorF(0xa69585),
-                  danger = D2D1::ColorF(0xe09a86);
+static uint32_t colorHex(D2D1_COLOR_F color) {
+    return (uint32_t(color.r * 255 + .5f) << 16) |
+           (uint32_t(color.g * 255 + .5f) << 8) | uint32_t(color.b * 255 + .5f);
+}
+static COLORREF windowColor(D2D1_COLOR_F color) {
+    const auto hex = colorHex(color);
+    return RGB((hex >> 16) & 255, (hex >> 8) & 255, hex & 255);
+}
+void UI::applyTheme() {
+    // Only colors change. Keep the renderer, cached text and frame scheduling.
+    static constexpr uint32_t colors[3][10] = {
+        {0x19130f, 0x251d17, 0x30251d, 0xc68c59, 0xeee4da,
+         0xa69585, 0xe09a86, 0x211913, 0x100d0b, 0x19130f},
+        {0x101114, 0x191b20, 0x24272e, 0x89a9ff, 0xf0f1f5,
+         0x9da4b4, 0xff9b91, 0x14161a, 0x0c0d10, 0x101522},
+        {0xf4f5f7, 0xffffff, 0xedeff3, 0x365cbe, 0x1f2937,
+         0x5c6678, 0xb42318, 0xe9ecf2, 0xe1e5ec, 0xffffff}
+    };
+    const auto& c = colors[std::clamp(cfg_.theme, 0, 2)];
+    bg = D2D1::ColorF(c[0]); panel = D2D1::ColorF(c[1]);
+    surface = D2D1::ColorF(c[2]); accent = D2D1::ColorF(c[3]);
+    ink = D2D1::ColorF(c[4]); muted = D2D1::ColorF(c[5]);
+    danger = D2D1::ColorF(c[6]); sidebar = D2D1::ColorF(c[7]);
+    previewBack = D2D1::ColorF(c[8]); onAccent = D2D1::ColorF(c[9]);
+    if (hwnd_) {
+        const BOOL dark = cfg_.theme != 2;
+        const COLORREF border = windowColor(bg);
+        DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));
+        DwmSetWindowAttribute(hwnd_, 34, &border, sizeof(border));
+        DwmSetWindowAttribute(hwnd_, 35, &border, sizeof(border));
+    }
+}
 static bool inside(D2D1_RECT_F r, float x, float y) {
     return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
 }
@@ -62,6 +90,7 @@ static void screenshot(HWND window, int page) {
 }
 int UI::run(int show) {
     cfg_ = Config::load();
+    applyTheme();
     Log::get().write("NCO 0.4.0 starting");
     hardware_ = hardwareInfo();
     WNDCLASSEXW c{sizeof(c)};
@@ -94,11 +123,7 @@ int UI::run(int show) {
     SetWindowPos(hwnd_, nullptr, mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left - width) / 2,
                  mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top - height) / 2, width, height,
                  SWP_NOZORDER);
-    BOOL dark = TRUE;
-    DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));
-    COLORREF borderColor = RGB(25, 19, 15);
-    DwmSetWindowAttribute(hwnd_, 34, &borderColor, sizeof(borderColor));
-    DwmSetWindowAttribute(hwnd_, 35, &borderColor, sizeof(borderColor));
+    applyTheme();
     DWORD corner = 2;
     DwmSetWindowAttribute(hwnd_, 33, &corner, sizeof(corner));
     hotkeys_ = std::make_unique<Hotkeys>(hwnd_);
@@ -274,6 +299,7 @@ void UI::resources() {
     }
 }
 void UI::text(const std::wstring& s, D2D1_RECT_F r, int size, D2D1_COLOR_F color, bool bold, bool center) {
+    if (color.a < 0) color = ink;
     int id = size + (bold ? 1000 : 0) + (center ? 2000 : 0);
     if (!fonts_.count(id)) {
         Com<IDWriteTextFormat> f;
@@ -419,7 +445,7 @@ void UI::button(std::wstring id, std::wstring label, D2D1_RECT_F r, std::functio
     if (!enabled)
         color = blend(panel, color, .4f);
     round(r, color, 9);
-    auto fg = enabled ? (primary ? bg : ink) : muted;
+    auto fg = enabled ? (primary ? onAccent : ink) : muted;
     if (!glyph.empty())
         icon(glyph, {r.left + 7, r.top, r.left + 33, r.bottom}, fg);
     if (!label.empty())
@@ -465,7 +491,7 @@ void UI::toggle(std::wstring id, std::wstring label, float y, bool value,
     float p = animationsEnabled() ? ease(float(clockUs() - t.start) / 150000) : 1;
     float v = t.from + (t.to - t.from) * p;
     round(r, blend(surface, accent, v), 11);
-    brush_->SetColor(blend(muted, bg, v));
+    brush_->SetColor(blend(muted, onAccent, v));
     target_->FillEllipse(D2D1::Ellipse({r.left + 11 + 20 * v, y + 29}, 7, 7), brush_.Get());
     controls_.push_back({{left, y, right, y + 58}, std::move(id), std::move(click), enabled});
 }
@@ -612,10 +638,12 @@ void UI::dashboard() {
     bool locked = stats_.recording;
     std::wstring source =
         sources_.empty() ? L"No capture source" : sources_[size_t(sourceIndex_)].name;
-    text(L"CAPTURE SOURCE", {left, y, right, y + 22}, 11, muted, true);
-    D2D1_RECT_F sr{left, y + 30, right - 198, y + 72};
+    round({left, y, right, y + 78}, panel, 10);
+    text(L"Capture source", {left + 16, y + 4, right - 230, y + 28}, 13, ink, true);
+    text(L"Display, window or region", {right - 214, y + 4, right - 12, y + 28}, 11, muted);
+    D2D1_RECT_F sr{left + 12, y + 32, right - 210, y + 70};
     button(
-        L"source", source, sr,
+        L"source", L"", sr,
         [this, sr] {
             // Discover windows opened since startup, only when the selector is
             // requested. Preserve the current source without restarting capture.
@@ -632,8 +660,10 @@ void UI::dashboard() {
             });
         },
         false, !locked && !sources_.empty(), L"screen");
+    text(source, {sr.left + 40, sr.top, sr.right - 32, sr.bottom}, 13, locked ? muted : ink);
+    icon(L"chevron", {sr.right - 28, sr.top, sr.right - 8, sr.bottom}, muted);
     button(
-        L"region", L"Region", {right - 186, y + 30, right - 96, y + 72},
+        L"region", L"Region", {right - 198, y + 32, right - 108, y + 70},
         [this] {
             if (sources_.empty())
                 return;
@@ -648,19 +678,18 @@ void UI::dashboard() {
         },
         false, !locked && !sources_.empty() && sources_[size_t(sourceIndex_)].monitor);
     button(
-        L"refresh", L"Refresh", {right - 84, y + 30, right, y + 72},
+        L"refresh", L"Refresh", {right - 96, y + 32, right - 12, y + 70},
         [this] {
             refresh();
             save();
         },
         false, !locked);
-    y += 88;
-    const bool tight = h_ < 620;
-    const float maximumPreview = std::max(50.f, h_ - (tight ? 416.f : 426.f));
+    y += 90;
+    const float maximumPreview = std::max(50.f, h_ - 438.f);
     float ph =
         std::min(cfg_.compact ? 150.f : std::clamp(width * 9 / 16, 180.f, 320.f), maximumPreview);
     D2D1_RECT_F pr{left, y, right, y + ph};
-    round(pr, D2D1::ColorF(0x100d0b), 12);
+    round(pr, previewBack, 10);
     // Preview readback performs an extra GPU scale + staging copy. Stop that
     // work during a recording so the game and encoder get the GPU budget.
     if (cfg_.preview && bitmap_ && !stats_.recording) {
@@ -672,7 +701,7 @@ void UI::dashboard() {
                              y + (ph + dh) / 2},
                             1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     } else {
-        text(stats_.recording ? L"Preview paused while recording to reduce GPU load"
+        text(stats_.recording ? L"Preview paused while recording"
                               : cfg_.preview ? L"Waiting for capture…" : L"Preview paused",
              {left + 24, y + ph / 2 - 20, right - 24, y + ph / 2 + 20}, 16, muted);
     }
@@ -681,16 +710,16 @@ void UI::dashboard() {
         text(stats_.recording ? (stats_.paused ? L"PAUSED" : L"RECORDING") : L"LIVE PREVIEW",
              {left + 22, y + 12, left + 98, y + 36}, 9, stats_.recording ? accent : muted, true);
     }
-    y += ph + 16;
-    round({left, y, right, y + 76}, panel);
+    y += ph + 12;
+    round({left, y, right, y + 90}, panel);
     int64_t sec = stats_.durationUs / 1000000;
     wchar_t duration[32];
     swprintf_s(duration, L"%02lld:%02lld:%02lld", sec / 3600, (sec / 60) % 60, sec % 60);
-    text(duration, {left + 16, y + 10, left + 160, y + 42}, 24, ink, true);
+    text(duration, {left + 16, y + 10, left + 204, y + 48}, 26, ink, true);
     text(stats_.starting ? L"Starting recording…"
                         : stats_.recording ? (stats_.paused ? L"Recording paused" : L"Recording in progress")
-                          : L"",
-         {left + 16, y + 42, left + 190, y + 66}, 11, muted);
+                          : stats_.finishing ? L"Finalizing recording…" : L"Ready to record",
+         {left + 16, y + 48, left + 216, y + 76}, 11, muted);
     button(
         L"record",
         stats_.finishing ? L"Finalizing…"
@@ -698,23 +727,26 @@ void UI::dashboard() {
         : stats_.recording ? L"Stop recording"
         : probing_       ? L"Detecting encoders…"
                          : L"Start recording",
-        {right - 380, y + 18, right - 216, y + 58}, [this] { command(0); }, true,
+        {right - 456, y + 24, right - 280, y + 66}, [this] { command(0); }, true,
         stats_.ready && !stats_.finishing && (!probing_ || stats_.recording), stats_.recording ? L"stop" : L"record");
     button(
-        L"pause", L"", {right - 204, y + 18, right - 160, y + 58}, [this] { command(1); }, false,
+        L"pause", stats_.paused ? L"Resume" : L"Pause", {right - 268, y + 24, right - 172, y + 66}, [this] { command(1); }, false,
         stats_.recording && !stats_.finishing, stats_.paused ? L"play" : L"pause");
     button(
-        L"replay", L"Save replay", {right - 148, y + 18, right - 12, y + 58},
+        L"replay", L"Save replay", {right - 160, y + 24, right - 12, y + 66},
         [this] { command(2); }, false, stats_.replay, L"replay");
-    y += tight ? 80 : 90;
+    y += 102;
+    round({left, y, right, y + 56}, panel, 10);
+    text(L"Audio", {left + 16, y + 5, left + 180, y + 29}, 14, ink, true);
+    text(L"Microphone and desktop sound", {left + 16, y + 29, right - 316, y + 49}, 11, muted);
     button(
-        L"mic", cfg_.mic ? L"Mic on" : L"Mic muted", {left, y, left + 126, y + 38},
+        L"mic", cfg_.mic ? L"Mic on" : L"Mic muted", {right - 294, y + 9, right - 168, y + 47},
         [this] { command(3); }, cfg_.mic, true, L"mic");
     button(
         L"desktop", cfg_.desktop ? L"Sound on" : L"Sound muted",
-        {left + 138, y, left + 278, y + 38}, [this] { command(4); }, cfg_.desktop, true,
+        {right - 156, y + 9, right - 16, y + 47}, [this] { command(4); }, cfg_.desktop, true,
         L"speaker");
-    maxScroll_ = std::max(0, int(y + scroll_ + 92 - h_));
+    maxScroll_ = std::max(0, int(y + scroll_ + 94 - h_));
     if (scroll_ > maxScroll_) {
         scroll_ = maxScroll_;
         invalidate();
@@ -971,6 +1003,14 @@ void UI::settings() {
             y += 60;
         }
     } else if (page_ == 6) {
+        section(L"Appearance", L"Choose the colors used throughout NCO.", 1);
+        const std::vector<std::wstring> themes = {L"Brown", L"Dark", L"Light"};
+        pick(L"theme", L"Theme", themes[size_t(cfg_.theme)], themes, cfg_.theme,
+             [this](int index) {
+                 cfg_.theme = index;
+                 applyTheme();
+                 save(false);
+             });
         section(L"Capture", L"Choose the capture method for compatibility with your apps.", 1);
         const std::vector<std::wstring> apis = {L"Auto (recommended)", L"Windows Graphics Capture",
                                                 L"Desktop Duplication"};
@@ -1116,14 +1156,10 @@ void UI::popup() {
         progress = 1 - ease(float(clockUs() - a.closeStart) / 150000);
     D2D1_RECT_F box{x, upward ? y + height * (1 - progress) : y,
                       x + width, upward ? y + height : y + height * progress};
-    const bool modern = page_ != 0;
-    if (modern) {
-        round({box.left, box.top + 3, box.right, box.bottom + 3}, bg, 9);
-        round(box, panel, 9);
-        brush_->SetColor(blend(surface, ink, .12f));
-        target_->DrawRoundedRectangle(D2D1::RoundedRect(box, 9, 9), brush_.Get(), 1);
-    } else
-        round(box, surface, 10);
+    round({box.left, box.top + 3, box.right, box.bottom + 3}, bg, 9);
+    round(box, panel, 9);
+    brush_->SetColor(blend(surface, ink, .12f));
+    target_->DrawRoundedRectangle(D2D1::RoundedRect(box, 9, 9), brush_.Get(), 1);
     target_->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (int j = 0; j < visible; ++j) {
         int i = j + a.scroll;
@@ -1137,16 +1173,13 @@ void UI::popup() {
             choose(i);
             invalidate();
         };
-        if (modern) {
-            const bool selected = i == a.selected;
-            round(r, hoverColor(id, selected ? blend(panel, accent, .15f) : panel), 5);
-            if (selected)
-                icon(L"check", {r.left + 5, r.top, r.left + 31, r.bottom}, accent);
-            text(a.items[size_t(i)], {r.left + 36, r.top, r.right - 12, r.bottom}, 13,
-                 selected ? ink : muted, selected);
-            controls_.push_back({r, id, std::move(select), !a.closing});
-        } else
-            button(id, a.items[size_t(i)], r, std::move(select), i == a.selected, !a.closing);
+        const bool selected = i == a.selected;
+        round(r, hoverColor(id, selected ? blend(panel, accent, .15f) : panel), 5);
+        if (selected)
+            icon(L"check", {r.left + 5, r.top, r.left + 31, r.bottom}, accent);
+        text(a.items[size_t(i)], {r.left + 36, r.top, r.right - 12, r.bottom}, 13,
+             selected ? ink : muted, selected);
+        controls_.push_back({r, id, std::move(select), !a.closing});
         controls_.back().rect.top = std::max(r.top, box.top);
         controls_.back().rect.bottom = std::min(r.bottom, box.bottom);
         if (controls_.back().rect.bottom <= controls_.back().rect.top)
@@ -1216,7 +1249,7 @@ void UI::draw() {
     target_->BeginDraw();
     target_->Clear(bg);
     controls_.clear();
-    round({0, 0, 178, h_}, D2D1::ColorF(0x211913), 0);
+    round({0, 0, 178, h_}, sidebar, 0);
     text(L"NCO", {12, 20, 166, 64}, 28, ink, true, true);
     const wchar_t* titles[] = {L"Dashboard", L"Recording",  L"Audio",   L"Replay",
                                L"Hotkeys",   L"Appearance", L"Settings"};
@@ -1441,7 +1474,7 @@ void UI::toast(std::wstring msg) {
     KillTimer(hwnd_, 2);
     SetWindowTextW(toast_, msg.c_str());
     toastDpi_ = dpi_;
-    toastSurface_.prepare(msg, toastDpi_);
+    toastSurface_.prepare(msg, toastDpi_, colorHex(surface), colorHex(ink));
     MONITORINFO monitor{sizeof(monitor)};
     GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor);
     toastPosition_ = {monitor.rcWork.right - int(292 * toastDpi_ / 96),
@@ -1715,10 +1748,10 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_CTLCOLOREDIT: {
         HDC dc = reinterpret_cast<HDC>(w);
-        SetTextColor(dc, RGB(238, 228, 218));
-        SetBkColor(dc, RGB(48, 37, 29));
-        static HBRUSH b = CreateSolidBrush(RGB(48, 37, 29));
-        return reinterpret_cast<LRESULT>(b);
+        SetTextColor(dc, windowColor(ink));
+        SetBkColor(dc, windowColor(surface));
+        SetDCBrushColor(dc, windowColor(surface));
+        return reinterpret_cast<LRESULT>(GetStockObject(DC_BRUSH));
     }
     case WM_TIMER:
         if (w == 3) {

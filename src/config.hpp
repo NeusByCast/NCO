@@ -4,7 +4,7 @@ namespace nco {
 struct Config {
     int fps = 60, resolutionMode = 0, width = 1920, height = 1080, quality = 2, bitrateKbps = 35000,
         rateControl = 0,
-        replaySeconds = 30, captureBackend = 0;
+        replaySeconds = 30, captureBackend = 0, theme = 0;
     std::string encoder = "auto", format = "mp4";
     std::wstring directory, replayDirectory, micDevice, desktopDevice;
     bool remux = true, mic = true, desktop = true, separateTracks = false, replay = false,

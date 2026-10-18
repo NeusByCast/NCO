@@ -73,6 +73,9 @@ class UI {
     bool toastVisible_ = false, toastSlideIn_ = false, exclusion_ = false;
     std::function<void(std::wstring)> editCommit_;
     EngineStats stats_;
+    D2D1_COLOR_F bg{}, panel{}, surface{}, accent{}, ink{}, muted{}, danger{}, sidebar{},
+        previewBack{}, onAccent{};
+    void applyTheme();
     void draw();
     void updatePreviewTimer();
     void updateDisplayTiming();
@@ -83,7 +86,7 @@ class UI {
     bool animationFrameNeedsPaint(int64_t now) const;
     void resources();
     void text(const std::wstring& s, D2D1_RECT_F rect, int size = 14,
-              D2D1_COLOR_F color = D2D1::ColorF(0xece2d8), bool bold = false, bool center = false);
+              D2D1_COLOR_F color = {0, 0, 0, -1}, bool bold = false, bool center = false);
     void round(D2D1_RECT_F rect, D2D1_COLOR_F color, float radius = 10);
     void icon(const std::wstring& name, D2D1_RECT_F rect, D2D1_COLOR_F color);
     D2D1_COLOR_F hoverColor(const std::wstring& id, D2D1_COLOR_F base);

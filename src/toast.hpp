@@ -13,7 +13,8 @@ class ToastSurface {
     void reset();
   public:
     ~ToastSurface() { reset(); }
-    void prepare(const std::wstring& message, float dpi);
+    void prepare(const std::wstring& message, float dpi,
+                 uint32_t background = 0x30251d, uint32_t foreground = 0xeee4da);
     void frame(HWND window, int x, int y, BYTE alpha);
 };
 }

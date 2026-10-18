@@ -31,6 +31,7 @@ Config Config::load() {
     if (c.fps != 15 && c.fps != 30 && c.fps != 60)
         c.fps = 60;
     c.captureBackend = num("captureBackend", 0, 0, 2);
+    c.theme = num("theme", 0, 0, 2);
     c.resolutionMode = num("resolution", 0, 0, 5);
     c.width = num("width", 1920, 64, 7680);
     c.height = num("height", 1080, 64, 4320);
@@ -83,6 +84,7 @@ void Config::save() const {
 #define WRITE(name) f << #name "=" << name << "\n"
     WRITE(fps);
     WRITE(captureBackend);
+    WRITE(theme);
     f << "resolution=" << resolutionMode << "\n";
     WRITE(width);
     WRITE(height);
