@@ -685,7 +685,8 @@ void UI::dashboard() {
         },
         false, !locked);
     y += 90;
-    const float maximumPreview = std::max(50.f, h_ - 438.f);
+    const bool narrow = width < 650;
+    const float maximumPreview = std::max(50.f, h_ - (narrow ? 494.f : 438.f));
     float ph =
         std::min(cfg_.compact ? 150.f : std::clamp(width * 9 / 16, 180.f, 320.f), maximumPreview);
     D2D1_RECT_F pr{left, y, right, y + ph};
@@ -711,7 +712,7 @@ void UI::dashboard() {
              {left + 22, y + 12, left + 98, y + 36}, 9, stats_.recording ? accent : muted, true);
     }
     y += ph + 12;
-    round({left, y, right, y + 90}, panel);
+    round({left, y, right, y + (narrow ? 146.f : 90.f)}, panel);
     int64_t sec = stats_.durationUs / 1000000;
     wchar_t duration[32];
     swprintf_s(duration, L"%02lld:%02lld:%02lld", sec / 3600, (sec / 60) % 60, sec % 60);
@@ -720,6 +721,12 @@ void UI::dashboard() {
                         : stats_.recording ? (stats_.paused ? L"Recording paused" : L"Recording in progress")
                           : stats_.finishing ? L"Finalizing recording…" : L"Ready to record",
          {left + 16, y + 48, left + 216, y + 76}, 11, muted);
+    const float controlY = y + (narrow ? 88.f : 24.f);
+    const float recordX = narrow ? left + 12 : right - 456;
+    const float recordRight = narrow ? left + 188 : right - 280;
+    const float pauseX = narrow ? left + 196 : right - 268;
+    const float pauseRight = narrow ? left + 240 : right - 172;
+    const float replayX = narrow ? left + 248 : right - 160;
     button(
         L"record",
         stats_.finishing ? L"Finalizing…"
@@ -727,15 +734,16 @@ void UI::dashboard() {
         : stats_.recording ? L"Stop recording"
         : probing_       ? L"Detecting encoders…"
                          : L"Start recording",
-        {right - 456, y + 24, right - 280, y + 66}, [this] { command(0); }, true,
+        {recordX, controlY, recordRight, controlY + 42}, [this] { command(0); }, true,
         stats_.ready && !stats_.finishing && (!probing_ || stats_.recording), stats_.recording ? L"stop" : L"record");
     button(
-        L"pause", stats_.paused ? L"Resume" : L"Pause", {right - 268, y + 24, right - 172, y + 66}, [this] { command(1); }, false,
+        L"pause", narrow ? L"" : stats_.paused ? L"Resume" : L"Pause",
+        {pauseX, controlY, pauseRight, controlY + 42}, [this] { command(1); }, false,
         stats_.recording && !stats_.finishing, stats_.paused ? L"play" : L"pause");
     button(
-        L"replay", L"Save replay", {right - 160, y + 24, right - 12, y + 66},
+        L"replay", L"Save replay", {replayX, controlY, right - 12, controlY + 42},
         [this] { command(2); }, false, stats_.replay, L"replay");
-    y += 102;
+    y += narrow ? 158 : 102;
     round({left, y, right, y + 56}, panel, 10);
     text(L"Audio", {left + 16, y + 5, left + 180, y + 29}, 14, ink, true);
     text(L"Microphone and desktop sound", {left + 16, y + 29, right - 316, y + 49}, 11, muted);
