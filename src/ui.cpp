@@ -23,8 +23,8 @@ void UI::applyTheme() {
     static constexpr uint32_t colors[3][10] = {
         {0x19130f, 0x251d17, 0x30251d, 0xc68c59, 0xeee4da,
          0xa69585, 0xe09a86, 0x211913, 0x100d0b, 0x19130f},
-        {0x101114, 0x191b20, 0x24272e, 0x89a9ff, 0xf0f1f5,
-         0x9da4b4, 0xff9b91, 0x14161a, 0x0c0d10, 0x101522},
+        {0x101114, 0x191b20, 0x24272e, 0xd4d7de, 0xf0f1f5,
+         0x9da4b4, 0xff9b91, 0x14161a, 0x0c0d10, 0x17191e},
         {0xf4f5f7, 0xffffff, 0xedeff3, 0x365cbe, 0x1f2937,
          0x5c6678, 0xb42318, 0xe9ecf2, 0xe1e5ec, 0xffffff}
     };
@@ -1284,16 +1284,23 @@ void UI::draw() {
             : i == 3 ? L"replay"
                      : L"settings");
     }
-    button(
-        L"min", L"", {w_ - 138, 8, w_ - 96, 42}, [this] { ShowWindow(hwnd_, SW_MINIMIZE); }, false,
-        true, L"min");
-    button(
-        L"max", L"", {w_ - 94, 8, w_ - 52, 42},
-        [this] { ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE); }, false, true,
-        L"max");
-    button(
-        L"close", L"", {w_ - 50, 8, w_ - 8, 42}, [this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); },
-        false, true, L"close");
+    // One continuous caption group; shared edges replace the separate pills.
+    round({w_ - 140, 8, w_ - 8, 42}, surface, 7);
+    auto caption = [&](std::wstring id, D2D1_RECT_F rect, std::function<void()> action) {
+        auto color = hoverColor(id, surface);
+        if (pressed_ == id) color = blend(color, bg, .2f);
+        round({rect.left + 1, rect.top + 1, rect.right - 1, rect.bottom - 1}, color, 6);
+        icon(id, rect, ink);
+        controls_.push_back({rect, std::move(id), std::move(action), true});
+    };
+    caption(L"min", {w_ - 140, 8, w_ - 96, 42}, [this] { ShowWindow(hwnd_, SW_MINIMIZE); });
+    caption(L"max", {w_ - 96, 8, w_ - 52, 42},
+            [this] { ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE); });
+    caption(L"close", {w_ - 52, 8, w_ - 8, 42},
+            [this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); });
+    brush_->SetColor(blend(surface, ink, .12f));
+    target_->DrawLine({w_ - 96, 17}, {w_ - 96, 33}, brush_.Get());
+    target_->DrawLine({w_ - 52, 17}, {w_ - 52, 33}, brush_.Get());
     text(titles[page_], {206, 62, w_ - 28, 100}, 27, ink, true);
     if (page_ != 0) {
         const wchar_t* description = page_ == 1 ? L"Video, encoding, files and replay buffer"
