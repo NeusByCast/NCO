@@ -163,9 +163,10 @@ class DiskWriter {
     std::condition_variable cv_, exportCv_;
     std::deque<Job> queue_, exports_;
     size_t bytes_ = 0, exportBytes_ = 0;
+    bool stopping_ = false, exportsStopping_ = false;
     std::function<void(std::string, bool)> notify_;
     void push(Job job);
-    void pushExport(Job job);
+    void pushExport(Job job, bool waitForSpace = false);
     void run();
     void exportRun();
 

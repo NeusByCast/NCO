@@ -1281,17 +1281,31 @@ DiskWriter::DiskWriter(std::function<void(std::string, bool)> notify) : notify_(
     try {
         thread_ = std::jthread([this] { run(); });
     } catch (...) {
-        pushExport({Job::Quit});
+        {
+            std::lock_guard lock(exportMutex_);
+            exportsStopping_ = true;
+        }
+        exportCv_.notify_all();
         exportThread_.join();
         throw;
     }
 }
 DiskWriter::~DiskWriter() {
-    push({Job::Quit});
+    // Shutdown is a signal, not a queue entry: it cannot be rejected by a full
+    // queue or require an allocation. Workers drain accepted jobs before exit.
+    {
+        std::lock_guard lock(mutex_);
+        stopping_ = true;
+    }
+    cv_.notify_all();
     if (thread_.joinable())
         thread_.join();
     // The recording worker has now submitted all finalization work.
-    pushExport({Job::Quit});
+    {
+        std::lock_guard lock(exportMutex_);
+        exportsStopping_ = true;
+    }
+    exportCv_.notify_all();
     if (exportThread_.joinable())
         exportThread_.join();
 }
@@ -1305,16 +1319,22 @@ void DiskWriter::push(Job job) {
     queue_.push_back(std::move(job));
     cv_.notify_one();
 }
-void DiskWriter::pushExport(Job job) {
-    std::lock_guard lock(exportMutex_);
+void DiskWriter::pushExport(Job job, bool waitForSpace) {
+    std::unique_lock lock(exportMutex_);
     size_t amount = 0;
     for (auto& packet : job.clip)
         amount += packet.bytes();
-    if (exports_.size() >= 8 || exportBytes_ + amount > 256u * 1024u * 1024u)
+    const auto available = [&] {
+        return exports_.size() < 8 && exportBytes_ + amount <= 256u * 1024u * 1024u;
+    };
+    // Recording finalization must reach the exporter even during a burst of
+    // replay saves. Only the disk worker waits; capture and UI remain free.
+    if (waitForSpace) exportCv_.wait(lock, available);
+    else if (!available())
         throw std::runtime_error("Replay export queue is full; wait for pending clips to finish");
     exportBytes_ += amount;
     exports_.push_back(std::move(job));
-    exportCv_.notify_one();
+    exportCv_.notify_all();
 }
 void DiskWriter::open(std::filesystem::path path, std::vector<Track> tracks, bool remux,
                       std::string format) {
@@ -1370,15 +1390,18 @@ void DiskWriter::run() {
         Job job{remux ? Job::Remux : Job::Verify};
         job.path = final;
         job.source = temporary;
-        pushExport(std::move(job));
+        pushExport(std::move(job), true);
     };
     while (true) {
         Job job;
         {
             std::unique_lock lock(mutex_);
-            cv_.wait(lock, [&] { return !queue_.empty(); });
-            job = std::move(queue_.front());
-            queue_.pop_front();
+            cv_.wait(lock, [&] { return stopping_ || !queue_.empty(); });
+            if (queue_.empty()) job.type = Job::Quit;
+            else {
+                job = std::move(queue_.front());
+                queue_.pop_front();
+            }
             if (job.type == Job::Write)
                 bytes_ -= job.packet.bytes();
         }
@@ -1419,13 +1442,15 @@ void DiskWriter::exportRun() {
         size_t amount = 0;
         {
             std::unique_lock lock(exportMutex_);
-            exportCv_.wait(lock, [&] { return !exports_.empty(); });
+            exportCv_.wait(lock, [&] { return exportsStopping_ || !exports_.empty(); });
+            if (exports_.empty()) break;
             job = std::move(exports_.front());
             exports_.pop_front();
             // Keep the active clip charged to the budget until it has finished.
             for (auto& packet : job.clip)
                 amount += packet.bytes();
         }
+        exportCv_.notify_all();
         if (job.type == Job::Quit)
             break;
         try {
@@ -1467,6 +1492,7 @@ void DiskWriter::exportRun() {
             std::lock_guard lock(exportMutex_);
             exportBytes_ -= amount;
         }
+        exportCv_.notify_all();
     }
     SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
     CoUninitialize();

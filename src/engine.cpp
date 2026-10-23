@@ -133,6 +133,7 @@ void Engine::run(std::stop_token token) {
     uint64_t quantizerCount = 0;
     bool recording = false, paused = false, gate = false, forceKey = false, replay = false;
     bool suspended = false, stoppingRecording = false, drainingVideo = false, previewDirty = true, previewWasVisible = false;
+    bool encoderUnavailable = false;
     int64_t stopCutoff = 0, stopRequested = 0, drainRequested = 0, latestVideoUs = -1;
     int64_t keyframeWaitStart = 0, lastKeyframeRequest = 0, nextReplayKeyframe = 0;
     EngineStats local;
@@ -351,8 +352,12 @@ void Engine::run(std::stop_token token) {
             }
         }
     };
-    auto failPipeline = [&](const std::string& error) {
+    auto failPipeline = [&](const std::string& error, bool timedOut = false) {
         Log::get().write("Pipeline error: " + error);
+        // Normal errors can finish queued work. A timeout has already spent
+        // its wait budget; do not wait on that same worker a second time.
+        if (video && !timedOut)
+            timedOut = !video->waitForFinish(std::chrono::seconds(12));
         // Keep packets completed before a later encoder failure, then close the
         // file before releasing the encoder/driver resources.
         try {
@@ -368,8 +373,12 @@ void Engine::run(std::stop_token token) {
             stats_ = local;
         }
         closeRecordingOutput();
-        notify_("Pipeline stopped: " + error + "; recording file retained", true);
-        video.reset();
+        notify_("Pipeline stopped: " + error + "; recording file retained" +
+                (timedOut ? ". Restart NCO before recording again." : ""), true);
+        if (timedOut && video) {
+            encoderUnavailable = true;
+            VideoPipeline::retire(std::move(video), std::move(capture));
+        } else video.reset();
         audio.clear();
         mic.stop();
         desktop.stop();
@@ -399,6 +408,20 @@ void Engine::run(std::stop_token token) {
                 } catch (const std::exception& e) {
                     notify_(std::string("Remux failed: ") + e.what(), true);
                 }
+            }
+            if (encoderUnavailable) {
+                // Keep the UI and file exporter usable, but never open another
+                // device/session against a worker that may still own driver locks.
+                if (current.replay || std::any_of(actions.begin(), actions.end(), [](Action action) {
+                        return action == Record || action == ReplaySave;
+                    }))
+                    notify_("Pipeline stopped: encoder unavailable. Restart NCO before recording again.", true);
+                {
+                    std::lock_guard lock(mutex_);
+                    config_.replay = false;
+                }
+                WaitForSingleObject(wake_, INFINITE);
+                continue;
             }
             if (newGen != gen) {
                 bool captureChanged =
@@ -727,7 +750,7 @@ void Engine::run(std::stop_token token) {
                     drainRequested = clockUs();
                 }
                 if (drainingVideo && !video->finished() && clockUs() - drainRequested >= 12000000)
-                    throw std::runtime_error("Encoder shutdown timed out. Completed packets were saved; restart NCO if the graphics driver remains unresponsive");
+                    throw VideoPipeline::DrainTimeout();
                 if (recordingStopComplete(replay, drainingVideo,
                                           drainingVideo && video->finished(), fenceReached)) {
                     // A drain requested before replay was enabled cannot be
@@ -767,6 +790,8 @@ void Engine::run(std::stop_token token) {
             } else
                 WaitForSingleObject(wake_, DWORD(std::max<int64_t>(1, waitUs / 1000)));
 
+        } catch (const VideoPipeline::DrainTimeout& e) {
+            failPipeline(e.what(), true);
         } catch (const winrt::hresult_error& e) {
             failPipeline(utf8(e.message().c_str()));
         } catch (const std::exception& e) {
@@ -777,8 +802,10 @@ void Engine::run(std::stop_token token) {
         endPipeline(recording);
         if (recording)
             closeRecordingOutput();
+    } catch (const VideoPipeline::DrainTimeout& e) {
+        failPipeline(e.what(), true);
     } catch (const std::exception& e) {
-        notify_(e.what(), true);
+        failPipeline(e.what());
     }
     texture.Reset();
     capture.reset();

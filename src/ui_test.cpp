@@ -74,6 +74,12 @@ void UI::smokeControls() {
                 "Numeric edit did not commit and persist");
     };
     try {
+        require(SendMessageW(hwnd_, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF) == TRUE,
+                "NCO blocked Windows sign-out");
+        require(!closing_, "Session query started shutdown before Windows confirmed it");
+        SendMessageW(hwnd_, WM_ENDSESSION, FALSE, ENDSESSION_LOGOFF);
+        require(!closing_ && IsWindowEnabled(hwnd_), "Cancelled sign-out closed or disabled NCO");
+        report << "PASS Windows session query is accepted; cancelled sign-out leaves NCO open\n";
         const LONG_PTR windowStyle = GetWindowLongPtrW(hwnd_, GWL_STYLE);
         require((windowStyle & WS_CAPTION) == 0 && (windowStyle & WS_THICKFRAME) != 0,
                 "Custom title bar must omit the native caption while retaining resizing");

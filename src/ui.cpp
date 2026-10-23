@@ -916,7 +916,8 @@ void UI::settings() {
         tog(
             L"remux", L"Automatically remux recordings", cfg_.remux,
             [this] { cfg_.remux = !cfg_.remux; }, !locked,
-            L"Remux other formats to MKV after recording; keep the originals.");
+            cfg_.format == "mkv" ? L"Already MKV; no conversion is needed."
+                : L"Convert temporary MKV to selected format; remove it after verification.");
         section(L"Replay buffer", L"Keep recent footage ready to save with your replay shortcut.", 2);
         tog(
             L"replayenabled", L"Enable replay buffer", cfg_.replay,
@@ -1825,11 +1826,14 @@ LRESULT UI::message(HWND h, UINT m, WPARAM w, LPARAM l) {
         DestroyWindow(h);
         return 0;
     case WM_QUERYENDSESSION:
-        shutdown();
-        return FALSE;
+        // Windows may still cancel the session end. Agree without closing NCO
+        // or stopping a recording until the confirmed WM_ENDSESSION arrives.
+        return TRUE;
     case WM_ENDSESSION:
-        if (w && engine_)
-            engine_->stop();
+        if (w) {
+            finishEdit(true);
+            if (engine_) engine_->stop();
+        }
         return 0;
     case WM_CLOSE:
         finishEdit(true);

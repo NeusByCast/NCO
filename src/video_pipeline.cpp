@@ -104,6 +104,7 @@ void VideoPipeline::run() {
         std::lock_guard lock(mutex_);
         finished_ = true;
     }
+    cv_.notify_all();
 }
 std::vector<Packet> VideoPipeline::collect(bool recoverOnError) {
     std::lock_guard lock(mutex_);
@@ -126,10 +127,35 @@ bool VideoPipeline::finished() {
     std::lock_guard lock(mutex_);
     return finished_;
 }
-std::vector<Packet> VideoPipeline::flush() {
+bool VideoPipeline::waitForFinish(std::chrono::milliseconds timeout) {
     finish();
+    std::unique_lock lock(mutex_);
+    return cv_.wait_for(lock, timeout, [&] { return finished_; });
+}
+std::vector<Packet> VideoPipeline::flush(std::chrono::milliseconds timeout) {
+    if (!waitForFinish(timeout)) throw DrainTimeout();
     if (thread_.joinable()) thread_.join();
     return collect();
+}
+void VideoPipeline::retire(std::unique_ptr<VideoPipeline> video,
+                           std::unique_ptr<Capture> capture) noexcept {
+    // Never detach the encoder and destroy its resources underneath it. A
+    // cleanup thread owns the entire failed pipeline, without Engine/UI refs.
+    // If the driver recovers, join and free it there. A permanently stuck
+    // driver retains this one pipeline until process exit; Engine blocks retries.
+    auto* worker = video.release();
+    auto* source = capture.release();
+    try {
+        std::thread([worker, source] {
+            const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            delete worker;
+            delete source;
+            if (SUCCEEDED(co)) CoUninitialize();
+        }).detach();
+    } catch (...) {
+        // Thread creation failed. Retain the same bounded resources until exit
+        // rather than blocking shutdown or freeing memory still used by a driver.
+    }
 }
 VideoPipeline::Metrics VideoPipeline::metrics() {
     std::lock_guard lock(mutex_);

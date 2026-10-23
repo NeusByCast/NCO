@@ -517,6 +517,58 @@ void replayDurations(const std::filesystem::path& dir) {
         require(std::abs(result[0].end - result[1].end) < 100000, "Replay A/V timestamp mismatch");
     }
 }
+void exportShutdownTest(const std::filesystem::path& dir) {
+    Config config;
+    config.encoder = "libx264";
+    config.format = "mkv";
+    VideoEncoder encoder;
+    encoder.open(config, nullptr, {64, 64}, true);
+    const std::vector<Track> tracks{encoder.track()};
+    auto clip = encoder.synthetic(0, true);
+    auto tail = encoder.flush();
+    clip.insert(clip.end(), tail.begin(), tail.end());
+    require(!clip.empty(), "Export shutdown fixture has no video");
+    for (bool recording : {false, true}) {
+        std::promise<void> entered, release;
+        auto started = entered.get_future();
+        auto gate = release.get_future().share();
+        std::atomic<int> saved = 0, errors = 0;
+        auto writer = std::make_unique<DiskWriter>([&](std::string event, bool error) {
+            if (error) ++errors;
+            if (event == "Replay saved" && ++saved == 1) {
+                entered.set_value();
+                // Hold one active export so the queue can be filled exactly.
+                gate.wait_for(std::chrono::seconds(5));
+            }
+        });
+        const auto prefix = recording ? "full-export-recording-" : "full-export-idle-";
+        auto path = [&](int i) { return dir / (std::string(prefix) + std::to_string(i) + ".mkv"); };
+        writer->replay(path(0), tracks, clip);
+        require(started.wait_for(std::chrono::seconds(3)) == std::future_status::ready,
+                "Exporter did not reach the shutdown test barrier");
+        for (int i = 1; i <= 8; ++i) writer->replay(path(i), tracks, clip);
+        bool rejected = false;
+        try { writer->replay(path(9), tracks, clip); }
+        catch (const std::runtime_error&) { rejected = true; }
+        if (recording) {
+            writer->open(path(10), tracks, false, "mkv");
+            for (const auto& packet : clip) writer->write(packet, 0);
+            // Let destruction finalize the recording while exports are full.
+        }
+        auto shutdown = std::async(std::launch::async, [owner = std::move(writer)]() mutable {
+            owner.reset();
+        });
+        const bool draining = shutdown.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+        release.set_value();
+        shutdown.get();
+        require(rejected && draining, "Full export queue did not preserve its limit or drain on shutdown");
+        require(saved == 9 && errors == 0, "Shutdown lost an accepted export or recording finalization");
+        for (int i = 0; i <= 8; ++i)
+            require(inspect(path(i), true)[0].decodedFrames == 1, "Shutdown corrupted a queued replay");
+        if (recording)
+            require(inspect(path(10), true)[0].decodedFrames == 1, "Full export queue lost the recording");
+    }
+}
 } // namespace
 
 int mediaSelfTest() {
@@ -529,6 +581,8 @@ int mediaSelfTest() {
         report << "PASS AMF H264/HEVC/AV1: all quality/rate modes, bounded overlap, no analysis/preencode, balanced workload, quantizer limits and packet statistics\n";
         report << "PASS compiled NVENC/QSV/Media Foundation settings and actual libx264/VP9 runtime rate-control modes with automatic/manual bitrates\n";
         platformSelfTest(report);
+        exportShutdownTest(dir);
+        report << "PASS shutdown drains eight queued replays and finalizes an active recording without queue-full failure\n";
         {
             Config config;
             config.encoder = "libx264";
@@ -594,6 +648,23 @@ int mediaSelfTest() {
                     "Drain failure lost the completed recording packet");
         }
         report << "PASS bounded encoder worker: asynchronous stop, ordered accepted frames, drain failure reporting and completed-packet recovery\n";
+        {
+            Config config;
+            config.encoder = "libx264";
+            auto pipeline = std::make_unique<VideoPipeline>(config, nullptr, Size{320, 180}, true, 250);
+            require(pipeline->submit(nullptr, 0, true), "Timeout test frame rejected");
+            const auto begin = clockUs();
+            bool timedOut = false;
+            try { pipeline->flush(std::chrono::milliseconds(10)); }
+            catch (const VideoPipeline::DrainTimeout&) { timedOut = true; }
+            require(timedOut && clockUs() - begin < 200000,
+                    "Encoder drain timeout still waited for the slow worker");
+            const auto retireBegin = clockUs();
+            VideoPipeline::retire(std::move(pipeline), nullptr);
+            require(clockUs() - retireBegin < 100000,
+                    "Timed-out encoder retirement blocked the caller");
+            report << "PASS bounded encoder drain timeout and background retirement of a live worker\n";
+        }
         for (const auto& format : {"mp4", "mkv", "mov", "webm"}) {
             containerTest(dir, format);
             report << "PASS " << format

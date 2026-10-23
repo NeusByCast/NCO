@@ -21,6 +21,10 @@ class VideoPipeline {
     void run();
     void publish(std::vector<Packet> packets);
   public:
+    class DrainTimeout : public std::runtime_error {
+      public:
+        DrainTimeout() : std::runtime_error("Encoder shutdown timed out") {}
+    };
     struct Metrics {
         uint64_t frames = 0, readbackDropped = 0;
         double prepareMs = 0, submitMs = 0, encodeMs = 0;
@@ -40,7 +44,11 @@ class VideoPipeline {
     std::vector<Packet> collect(bool recoverOnError = false);
     void finish();
     bool finished();
-    std::vector<Packet> flush();
+    bool waitForFinish(std::chrono::milliseconds timeout);
+    std::vector<Packet> flush(std::chrono::milliseconds timeout = std::chrono::seconds(12));
+    // Transfer both objects together: the worker retains a raw Capture pointer.
+    // Used only after a timeout, when joining on the caller would hang the app.
+    static void retire(std::unique_ptr<VideoPipeline> video, std::unique_ptr<Capture> capture) noexcept;
     Metrics metrics();
 };
 }

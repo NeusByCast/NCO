@@ -1,5 +1,10 @@
 # NCO 0.4
 
+- Shutdown drains accepted replay exports even when the export queue is full. Recording finalization waits for exporter capacity instead of failing behind a burst of replay saves.
+- Encoder drain waits are bounded. After a timeout, completed packets are retained and the failed worker keeps ownership of its GPU resources during background cleanup; restarting NCO is required before recording again.
+- Windows shutdown/sign-out requests are accepted. Cleanup starts only when Windows confirms the session is ending, so cancelling sign-out leaves NCO open.
+- The automatic-remux hint now describes temporary MKV capture, conversion to the selected format and verified temporary-file removal, or explains that conversion is unnecessary when MKV is selected.
+
 - Dashboard controls are grouped into capture, preview, recording and audio areas, with a responsive preview height and labeled pause/resume control.
 - Settings now includes Brown, Dark and Light themes. Colors apply immediately and persist across launches without reconfiguring recording; native edits, window borders and new notifications follow the theme.
 
